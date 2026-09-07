@@ -59,3 +59,27 @@ KEY_COLLECTION_TIER = "collection_tier"
 # Continuous in-place translation. Off by default: it is the newer of the
 # two architectures and still experimental.
 KEY_EXPERIMENTAL_LIVE = "experimental_live_mode"
+
+# Which engine drives live mode.
+#
+# "grounding" is one vision call that detects, reads and translates together —
+# no local models, ~1s per changed frame.  "ocr" reads locally with PP-OCRv5
+# and sends only text, which is slower per frame but calls the network on a
+# fraction of the ticks, because it can tell whether the *text* changed rather
+# than only whether the pixels did.
+KEY_LIVE_ENGINE = "live_engine"
+LIVE_ENGINE_GROUNDING = "grounding"
+LIVE_ENGINE_OCR = "ocr"
+DEFAULT_LIVE_ENGINE = LIVE_ENGINE_GROUNDING
+
+# Detection model for the OCR engine: PP-OCRv5_mobile_det or _server_det.
+KEY_OCR_DETECTOR = "ocr_detector"
+
+# Newline-separated phrases stripped before the change gate sees a frame.
+# Each may be prefixed "regex:" or "exact:"; anything else is a substring.
+KEY_IGNORE_PHRASES = "ignore_phrases"
+
+# The new UI: translation boxes and the orb, instead of the tray, the command
+# OSD and the leader-key hotkeys.  Off by default; the classic shell is
+# untouched by it.
+KEY_NEW_UI = "new_ui"

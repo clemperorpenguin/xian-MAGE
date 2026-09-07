@@ -48,6 +48,7 @@ __all__ = [
     "DEFAULT_SIMILARITY",
     "SettleGate",
     "content_hash",
+    "is_cjk_text",
     "text_similarity",
 ]
 
@@ -91,11 +92,16 @@ def content_hash(lines: Sequence[str]) -> str:
     return f"{len(normalized)}|" + "|".join(normalized)
 
 
-def _is_cjk(text: str) -> bool:
-    """True when most of the text is ideographic or kana.
+def is_cjk_text(text: str) -> bool:
+    """True when a meaningful share of the text is ideographic, kana or hangul.
 
-    Drives which similarity metric is used: CJK has no word boundaries, so
-    every word-based measure returns nonsense for it.
+    Drives two decisions: which similarity metric to use, since CJK has no word
+    boundaries and every word-based measure returns nonsense for it; and
+    whether recognized fragments on one line are joined with a space, where an
+    inserted space is a visible error.
+
+    Lives here rather than in ``xian.ocr`` so that nothing about the change
+    gate depends on the optional OCR extra being installed.
     """
     counted = [character for character in text if not character.isspace()]
     if not counted:
@@ -172,7 +178,7 @@ def text_similarity(left: str, right: str, *, threshold: float = DEFAULT_SIMILAR
     if len(left) < _MIN_FUZZY_LENGTH or len(right) < _MIN_FUZZY_LENGTH:
         return 0.0  # exact match already ruled out above
 
-    if _is_cjk(left) or _is_cjk(right):
+    if is_cjk_text(left) or is_cjk_text(right):
         return _cjk_similarity(left, right)
     return _latin_similarity(left, right, threshold)
 

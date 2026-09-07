@@ -750,5 +750,53 @@
   "settings.tooltip.experimental_live": {
     "value": "Adds a Live button to the lens overlay, which keeps the selected region translated in place as it changes. Costs a vision call on every change.",
     "context": "Tooltip for the real-time translation checkbox"
+  },
+  "settings.label.live_engine": {
+    "value": "Live engine:",
+    "context": "Label for the setting choosing which engine drives live in-place translation"
+  },
+  "settings.tooltip.live_engine": {
+    "value": "Vision model: one call reads and translates the whole frame — no local models needed. Local OCR: reads on this machine and only sends text to be translated, so it re-translates only when the text actually changes.",
+    "context": "Tooltip explaining the trade-off between the two live translation engines"
+  },
+  "settings.option.live_engine.grounding": {
+    "value": "Vision model (default)",
+    "context": "Dropdown option: live translation done by a single vision-model call"
+  },
+  "settings.option.live_engine.ocr": {
+    "value": "Local OCR + translation",
+    "context": "Dropdown option: live translation done by reading text locally, then translating it"
+  },
+  "settings.label.ocr_detector": {
+    "value": "Text detector:",
+    "context": "Label for choosing which local text-detection model the OCR engine uses"
+  },
+  "settings.tooltip.ocr_detector": {
+    "value": "Fast is enough for most on-screen text. Accurate finds smaller and fainter text but takes noticeably longer per frame.",
+    "context": "Tooltip explaining the choice between the fast and accurate text detection models"
+  },
+  "settings.option.ocr_detector.mobile": {
+    "value": "Fast (recommended)",
+    "context": "Dropdown option: the smaller, quicker text detection model"
+  },
+  "settings.option.ocr_detector.server": {
+    "value": "Accurate (slower)",
+    "context": "Dropdown option: the larger, more accurate text detection model"
+  },
+  "settings.label.ignore_phrases": {
+    "value": "Ignore phrases:",
+    "context": "Label for a text box listing phrases that should never be translated"
+  },
+  "settings.tooltip.ignore_phrases": {
+    "value": "One phrase per line. Text containing a phrase is ignored, so a permanent label such as a clock or a health bar never counts as the screen changing. Prefix a line with exact: to match the whole line, or regex: for a pattern.",
+    "context": "Tooltip explaining the ignore-phrases list and its optional exact: and regex: prefixes"
+  },
+  "settings.checkbox.new_ui": {
+    "value": "Use the new interface (boxes and orb)",
+    "context": "Checkbox enabling the new user interface in place of the tray icon and keyboard shortcuts"
+  },
+  "settings.tooltip.new_ui": {
+    "value": "Replaces the keyboard shortcuts with translation boxes you place on screen and an orb you click. Restart to apply. The classic interface is unchanged and you can switch back at any time.",
+    "context": "Tooltip explaining what the new interface changes and that a restart is needed"
   }
 }
