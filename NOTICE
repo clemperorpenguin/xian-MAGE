@@ -1,0 +1,72 @@
+Xian-VL / MAGE
+Copyright (C) 2026 Clementine Pendragon <clem@pendragon.systems>
+
+This program is free software under the GNU General Public License version 3
+or later.  See LICENSE for the full text.
+
+This file records third-party work that has been adapted into this codebase.
+Everything listed here is licensed compatibly with GPL-3.0-or-later; the
+adaptations themselves are GPL-3.0-or-later like the rest of the project.
+
+
+PaddleOCR — Apache License 2.0
+    https://github.com/PaddlePaddle/PaddleOCR
+    Copyright (c) 2020 PaddlePaddle Authors
+
+    The PP-OCRv5 detection and recognition models are exported to ONNX by
+    scripts/export_ppocr_onnx.py and downloaded at runtime; their weights and
+    character dictionaries are PaddleOCR's, redistributed unmodified.
+
+    Adapted algorithms:
+      packages/xian-vl/src/xian/ocr/detect.py     DBPostProcess — probability
+          map thresholding, contour extraction, box scoring and unclipping,
+          and its default constants.
+      packages/xian-vl/src/xian/ocr/rectify.py    get_rotate_crop_image — the
+          perspective rectification of a detected quad.
+      packages/xian-vl/src/xian/ocr/recognize.py  CTCLabelDecode and the
+          aspect-sorted recognition batching.
+      packages/xian-vl/src/xian/ocr/preprocess.py the detector input
+          normalisation (limit_side_len, multiple-of-32 padding, mean/std).
+
+
+docTR — Apache License 2.0
+    https://github.com/mindee/doctr
+    Copyright (c) 2021 Mindee
+
+    Adapted algorithms:
+      packages/xian-vl/src/xian/ocr/grouping.py   DocumentBuilder._sort_boxes
+          (reading order) and _resolve_lines (line assembly).  The line-break
+          distance is re-expressed relative to the local median box height
+          rather than to page width, because the input here is a screen region
+          of arbitrary size rather than a document page.
+
+
+EasyOCR — Apache License 2.0
+    https://github.com/JaidedAI/EasyOCR
+    Copyright (c) 2020 Jaided AI
+
+    Adapted algorithms:
+      packages/xian-vl/src/xian/ocr/grouping.py   get_paragraph — the free
+          merge of boxes into paragraphs, including its right-to-left mode.
+          The merge radius is derived from the median line height rather than
+          the maximum, so a single oversized box cannot set the radius for a
+          whole screen.
+
+
+RSTGameTranslation — GNU General Public License v3
+    https://github.com/rstgametranslation/RSTGameTranslation
+
+    Adapted algorithms:
+      packages/xian-vl/src/xian/text_gate.py      the content hash, the
+          language-aware fuzzy text similarity, and the settle-time debounce
+          (Logic.cs).
+      packages/xian-vl/src/xian/filters.py        confidence floors and
+          ignore-phrase filtering applied ahead of the change gate (Logic.cs).
+      packages/xian-vl/src/xian/ocr/preprocess.py the adaptive HDR/low-contrast
+          enhancement and its trigger conditions
+          (app/webserver/RapidOCR/process_image_rapidocr.py).
+      packages/xian-vl/src/xian/ocr/models.py     the resumable, checksum-
+          verified, atomically-renamed model download
+          (WhisperModelDownloader.cs).
+      packages/xian-vl/src/xian/ocr/grouping.py   vertical/tategaki detection
+          and right-to-left column ordering (BlockDetectionManager.cs).

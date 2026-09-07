@@ -236,3 +236,67 @@ def test_a_product_name_fills_in_a_modality_the_labels_omitted():
 
     assert router.image() == "SD-Turbo"
     assert router.edit() == "SD-Turbo"
+
+
+# ── Hy-MT2, the live pipeline's line translator ───────────────────────
+
+# What the local server actually publishes for the Hy-MT2 family: generic
+# `chat` labels, and `tool-calling` on the 30B, none of which it can honour.
+HY_MT2_MODELS = [
+    {"id": "Qwen3.5-4B-MTP-GGUF", "recipe": "llamacpp",
+     "labels": ["chat", "tool-calling", "vision"], "downloaded": True},
+    {"id": "Hy-MT2-1.8B-GGUF-Q4_K_M", "recipe": "llamacpp",
+     "labels": ["chat", "custom"], "downloaded": True},
+]
+
+
+def test_hy_mt2_claims_translation():
+    """The pinned line translator has to be reachable as one."""
+    assert _router(HY_MT2_MODELS, BACKEND_AUTO).translation() == "Hy-MT2-1.8B-GGUF-Q4_K_M"
+
+
+def test_hy_mt2_does_not_displace_the_planner():
+    """It is published as `chat`, and answers a question by translating it.
+
+    Listed before the planner on a server that happens to order it that way,
+    an unguarded first-wins table would hand it the whole conversation.
+    """
+    reordered = list(reversed(HY_MT2_MODELS))
+    router = _router(reordered, BACKEND_AUTO)
+
+    assert router.llm() == "Qwen3.5-4B-MTP-GGUF"
+    assert router.translation() == "Hy-MT2-1.8B-GGUF-Q4_K_M"
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["Hy-MT2-1.8B-GGUF-Q4_K_M", "Hy-MT2-7B-GGUF-Q4_K_M", "Hy-MT2-30B-A3B-GGUF-Q4_K_M"],
+)
+def test_no_hy_mt2_variant_takes_another_modality(model_id):
+    """Including the 30B, which the server additionally labels `tool-calling`."""
+    models = [
+        {"id": "Qwen3.5-4B-MTP-GGUF", "recipe": "llamacpp",
+         "labels": ["chat", "tool-calling", "vision"], "downloaded": True},
+        {"id": model_id, "recipe": "llamacpp",
+         "labels": ["chat", "custom", "tool-calling"], "downloaded": True},
+    ]
+    router = _router(models, BACKEND_AUTO)
+
+    for resolved in (router.llm(), router.vision(), router.asr(), router.tts()):
+        assert resolved != model_id
+
+
+def test_hunyuan_ocr_is_not_mistaken_for_a_translation_model():
+    """"HunyuanOCR" shares a prefix with "hunyuan-mt" and is a vision model.
+
+    It sits beside Hy-MT2 on the same server, so a substring check that was
+    one character looser would strip its vision label and leave live mode
+    with no reader at all.
+    """
+    models = [
+        {"id": "HunyuanOCR-1.5-GGUF-Updated-Q4_K_M", "recipe": "llamacpp",
+         "labels": ["chat", "custom", "vision"], "downloaded": True},
+    ]
+    router = _router(models, BACKEND_AUTO)
+
+    assert router.vision() == "HunyuanOCR-1.5-GGUF-Updated-Q4_K_M"
