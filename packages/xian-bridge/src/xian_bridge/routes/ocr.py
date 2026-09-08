@@ -7,7 +7,7 @@ POST /ocr/render — Inpaint translated blocks onto an image (overlay mode)
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Literal, Optional
+from typing import Literal
 import asyncio
 import base64
 import importlib.util
@@ -174,7 +174,7 @@ async def ocr_render(request: OcrRenderRequest):
         raise HTTPException(status_code=400, detail=f"Invalid image: {e}")
 
     # Draw translated text onto the image
-    from PIL import ImageDraw, ImageFont
+    from PIL import ImageDraw
     draw = ImageDraw.Draw(pil_image)
 
     for block_data in request.blocks:
@@ -187,8 +187,6 @@ async def ocr_render(request: OcrRenderRequest):
         y2 = quad.get("y2", y1)
         x3 = quad.get("x3", x2)
         y3 = quad.get("y3", y2 + 20)
-        x4 = quad.get("x4", x1)
-        y4 = quad.get("y4", y3)
 
         # White background for the text region
         draw.rectangle([x1, y1, x3, y3], fill="white")

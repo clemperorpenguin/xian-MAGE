@@ -2,7 +2,6 @@
 Tests for cache routes.
 """
 
-import pytest
 from fastapi.testclient import TestClient
 from xian_bridge.app import create_app
 

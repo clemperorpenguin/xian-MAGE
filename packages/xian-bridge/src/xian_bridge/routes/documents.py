@@ -128,7 +128,6 @@ def parse_srt(content: str) -> list[dict]:
 
 def parse_vtt(content: str) -> list[dict]:
     """Parse WebVTT subtitle format."""
-    import re
     lines = content.split("\n")
     cues = []
     i = 0
@@ -154,7 +153,6 @@ def parse_vtt(content: str) -> list[dict]:
 
 def parse_ass(content: str) -> list[dict]:
     """Parse ASS/SSA subtitle format (simplified: extract Dialogue events)."""
-    import re
     cues = []
     for line in content.split("\n"):
         if line.startswith("Dialogue:"):

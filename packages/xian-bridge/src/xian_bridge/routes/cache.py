@@ -5,9 +5,9 @@ GET  /cache?source_text=...&source_lang=...&target_lang=...  — Lookup
 POST /cache  — Batch store translations
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import time
 import sqlite3
 import os

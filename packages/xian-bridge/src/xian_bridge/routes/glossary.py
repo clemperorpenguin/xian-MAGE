@@ -7,7 +7,6 @@ GET /glossary — Returns the wiki glossary MAGE already builds, merged with
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional
 
 router = APIRouter(prefix="/glossary")
 

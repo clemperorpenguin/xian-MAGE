@@ -44,8 +44,6 @@ def test_ocr_validates_image_format():
 def test_ocr_returns_block_structure():
     """A valid image should return blocks with quads."""
     # Generate a 10x10 white PNG
-    from PIL import Image
-    import io
     img = Image.new('RGB', (10, 10), color='white')
     buf = io.BytesIO()
     img.save(buf, format='PNG')
@@ -66,8 +64,6 @@ def test_ocr_returns_block_structure():
 def test_ocr_render_returns_image():
     """Render endpoint should return a base64 image."""
     # Generate a 100x100 white PNG
-    from PIL import Image
-    import io
     img = Image.new('RGB', (100, 100), color='white')
     buf = io.BytesIO()
     img.save(buf, format='PNG')
