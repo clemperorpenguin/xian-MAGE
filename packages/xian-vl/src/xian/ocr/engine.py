@@ -36,7 +36,7 @@ import numpy as np
 
 from xian.ocr.base import Line
 from xian.ocr.detect import DetectConfig, TextDetector
-from xian.ocr.models import ModelNotAvailable, ensure_model
+from xian.ocr.models import ensure_model
 from xian.ocr.preprocess import enhance
 from xian.ocr.recognize import RecognizeConfig, TextRecognizer
 from xian.ocr.rectify import rectify

@@ -18,7 +18,6 @@
 
 """The text-level change gate."""
 
-import pytest
 
 from xian.text_gate import SettleGate, content_hash, text_similarity
 

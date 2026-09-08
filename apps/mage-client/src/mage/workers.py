@@ -703,6 +703,98 @@ class RaidWorker(QThread):
             self.error.emit(str(e))
 
 
+class OrbVoiceWorker(QThread):
+    """Push-to-talk: capture, transcribe, translate, emit.
+
+    Deliberately not RaidWorker.  That one is a continuous three-stage pipeline
+    with its own queues and a TTS consumer, built for a raid that runs for an
+    hour; this runs for as long as a button is held.  Reusing it would mean
+    starting and stopping that whole machine on every press, and its queues
+    exist to absorb a backlog this shape does not have.
+
+    Both stages go through the same Lemonade client the rest of the app uses,
+    and translation goes through the OCR pipeline's line translator, so a
+    spoken line and a read line are translated by the same model and share the
+    same cache.
+    """
+
+    #: (transcript, translation) — emitted once per captured utterance.
+    utterance = pyqtSignal(str, str)
+    status = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, processor, *, source_lang: str = "Chinese", target_lang: str = "English"):
+        super().__init__()
+        self.processor = processor
+        self.source_lang = source_lang
+        self.target_lang = target_lang
+        self._running = True
+
+    def stop(self):
+        """Release: finish the utterance in flight, then end."""
+        self._running = False
+
+    async def _run_async(self):
+        from mage.capture.audio import ContinuousAudioStreamer
+
+        base_url = os.environ.get("LEMONADE_API_URL", self.processor.config.api_url)
+        streamer = ContinuousAudioStreamer()
+        await streamer.start()
+
+        try:
+            active_model = self.processor.config.model_name
+            if not self.processor.router.asr(active_model):
+                await self.processor.router.discover_async()
+            asr_model = self.processor.router.asr(active_model)
+            if not asr_model:
+                raise ValueError("No transcription model available on the server.")
+
+            from xian.translate import LineTranslator
+
+            translator = LineTranslator(processor=self.processor)
+            self.status.emit("newui.orb.status.listening")
+
+            async with LemonadeClient(base_url=base_url.removesuffix("/v1")) as client:
+                async for chunk in streamer.read_chunks():
+                    if not self._running:
+                        break
+                    self.status.emit("newui.orb.status.transcribing")
+                    try:
+                        transcript = await asyncio.wait_for(
+                            client.transcribe(
+                                chunk,
+                                language=whisper_language_hint(self.source_lang),
+                                model=asr_model,
+                            ),
+                            timeout=15.0,
+                        )
+                    except Exception as exc:
+                        logger.warning("orb transcription failed: %s", exc)
+                        self.status.emit("newui.orb.status.listening")
+                        continue
+
+                    if not transcript or not transcript.strip():
+                        self.status.emit("newui.orb.status.listening")
+                        continue
+
+                    self.status.emit("newui.orb.status.translating")
+                    translated = await translator.translate_lines(
+                        [transcript], self.source_lang, self.target_lang
+                    )
+                    self.utterance.emit(transcript, translated[0] if translated else transcript)
+                    self.status.emit("newui.orb.status.listening")
+        finally:
+            self._running = False
+            await streamer.stop()
+
+    def run(self):
+        try:
+            self.processor.engine.submit(self._run_async()).result()
+        except Exception as exc:
+            logger.error("OrbVoiceWorker error: %s", exc)
+            self.error.emit(str(exc))
+
+
 class StatusWorker(QThread):
     """Check Lemonade server availability via HTTP GET /models."""
 

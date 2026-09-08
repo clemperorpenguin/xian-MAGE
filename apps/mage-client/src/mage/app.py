@@ -789,9 +789,19 @@ class XianApp(QWidget):
         self._setup_telemetry()
         self._setup_familiar()
 
+        # Last, so the new shell can turn off the parts of the classic one it
+        # replaces rather than racing them into existence.
+        from mage.ui.shell import install_shell
+
+        self._shell = install_shell(self)
+
     def _setup_familiar(self):
         """Create the desktop familiar companion if Familiar Mode is enabled."""
         self.familiar = None
+        if is_true(self.settings.value(KEY_NEW_UI, "false")):
+            # The orb is the creature under the new UI, and two of them on
+            # screen at once is one too many.
+            return
         fam_val = self.settings.value(KEY_FAMILIAR_ENABLED, "false")
         if is_true(fam_val):
             self._create_familiar()
@@ -1090,6 +1100,10 @@ class XianApp(QWidget):
 
     def _on_live_regions(self, regions, rect: QRect, scale: float = 1.0):
         """Paint newly translated regions in place."""
+        shell = getattr(self, "_shell", None)
+        if shell is not None:
+            for region in regions:
+                shell.on_translation(region.original, region.translated)
         overlay = getattr(self, "inpaint_overlay", None)
         if overlay is None or not self._is_valid_widget(overlay):
             return
@@ -2823,6 +2837,15 @@ class XianApp(QWidget):
             super().closeEvent(event)
             return
         self._shutdown_done = True
+
+        shell = getattr(self, "_shell", None)
+        if shell is not None:
+            # First: it owns worker threads, and they have to be joined before
+            # the processor they are using goes away.
+            try:
+                shell.teardown()
+            except Exception as exc:
+                logger.error("Error tearing down the UI shell: %s", exc)
 
         # Stop periodic timers first so nothing new is dispatched mid-teardown.
         for timer_attr in ("_telemetry_timer", "dialogue_timer", "osd_timer", "window_tracking_timer"):

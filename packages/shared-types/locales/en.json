@@ -798,5 +798,65 @@
   "settings.tooltip.new_ui": {
     "value": "Replaces the keyboard shortcuts with translation boxes you place on screen and an orb you click. Restart to apply. The classic interface is unchanged and you can switch back at any time.",
     "context": "Tooltip explaining what the new interface changes and that a restart is needed"
+  },
+  "newui.box.mode.live": {
+    "value": "Live",
+    "context": "Box mode button: the box translates continuously"
+  },
+  "newui.box.mode.once": {
+    "value": "Once",
+    "context": "Box mode button: the box translates when double-clicked, then holds"
+  },
+  "newui.box.mode.ignore": {
+    "value": "Ignore",
+    "context": "Box mode button: the area is hidden from every other box, for parts of the screen that change constantly"
+  },
+  "newui.box.mode.off": {
+    "value": "Off",
+    "context": "Box mode button: the box is kept but does nothing"
+  },
+  "newui.orb.title": {
+    "value": "Mage",
+    "context": "Default heading of the orb panel"
+  },
+  "newui.orb.tooltip": {
+    "value": "Click to open · double-click for the microphone · drag to move",
+    "context": "Tooltip on the orb explaining its three gestures"
+  },
+  "newui.orb.button.add_box": {
+    "value": "Add box",
+    "context": "Button that starts drawing a new translation box on screen"
+  },
+  "newui.orb.button.notes": {
+    "value": "Notes",
+    "context": "Button that opens the notes sidebar"
+  },
+  "newui.orb.button.settings": {
+    "value": "Settings",
+    "context": "Button that opens the settings dialog"
+  },
+  "newui.orb.button.mic": {
+    "value": "🎙",
+    "context": "Toggle button that starts and stops listening to speech"
+  },
+  "newui.orb.button.send": {
+    "value": "Send",
+    "context": "Button that sends the typed message"
+  },
+  "newui.orb.input.placeholder": {
+    "value": "Ask about what is on screen…",
+    "context": "Placeholder text in the orb's message box"
+  },
+  "newui.orb.status.listening": {
+    "value": "Listening…",
+    "context": "Orb panel heading while it is waiting for speech"
+  },
+  "newui.orb.status.transcribing": {
+    "value": "Transcribing…",
+    "context": "Orb panel heading while speech is being turned into text"
+  },
+  "newui.orb.status.translating": {
+    "value": "Translating…",
+    "context": "Orb panel heading while text is being translated"
   }
 }

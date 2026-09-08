@@ -49,7 +49,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from xian.ocr.base import Block, Line, quad_height
+from xian.ocr.base import Block, Line
 from xian.ocr.detect import order_quad
 
 __all__ = ["GroupingConfig", "group_lines", "is_vertical", "median_text_size", "merge_row"]

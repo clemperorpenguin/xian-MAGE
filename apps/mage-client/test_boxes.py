@@ -1,0 +1,209 @@
+# MAGE — Gaming HUD for real-time screen translation.
+# Copyright (C) 2026  Clementine Pendragon <clem@pendragon.systems>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# Contact: clem@pendragon.systems (Clementine Pendragon, c/o Xian Project Development)
+
+"""Translation boxes: their modes, their persistence, and what they mask."""
+
+import json
+import os
+import sys
+
+import pytest
+from PyQt6.QtCore import QRect, QSettings
+from PyQt6.QtWidgets import QApplication, QWidget
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from mage.ui.new.boxes import MAX_BOXES, BoxManager, BoxMode, BoxState, TranslationBox  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def q_app():
+    app = QApplication.instance() or QApplication(sys.argv)
+    yield app
+
+
+class FakeApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.settings = QSettings("XianProject", "MageBoxTest")
+        self.settings.clear()
+        self.processor = object()
+
+
+@pytest.fixture
+def manager():
+    app = FakeApp()
+    manager = BoxManager(app)
+    yield manager
+    manager.clear()
+    app.settings.clear()
+
+
+# ── modes ────────────────────────────────────────────────────────────
+
+def test_the_mode_cycle_returns_to_where_it_started():
+    """One button, four modes, no modifiers — so it has to be a cycle."""
+    mode = BoxMode.LIVE
+    for _ in range(len(BoxMode)):
+        mode = mode.next()
+
+    assert mode is BoxMode.LIVE
+
+
+def test_a_new_box_carries_the_mode_it_was_given(manager):
+    box = manager.add_box(QRect(10, 10, 200, 60), BoxMode.OFF)
+
+    assert box is not None
+    assert box.mode is BoxMode.OFF
+
+
+def test_an_off_box_starts_no_worker(manager):
+    manager.add_box(QRect(10, 10, 200, 60), BoxMode.OFF)
+
+    assert manager._workers == {}
+
+
+# ── the cap ──────────────────────────────────────────────────────────
+
+def test_the_box_count_is_capped(manager):
+    """Every live box is a reader, and they share one engine."""
+    for index in range(MAX_BOXES):
+        assert manager.add_box(QRect(index * 20, 10, 100, 40), BoxMode.OFF) is not None
+
+    assert manager.add_box(QRect(500, 10, 100, 40), BoxMode.OFF) is None
+    assert len(manager.boxes) == MAX_BOXES
+
+
+# ── exclusions ───────────────────────────────────────────────────────
+
+def test_only_ignore_boxes_are_excluded(manager):
+    manager.add_box(QRect(10, 10, 100, 40), BoxMode.OFF)
+    ignored = manager.add_box(QRect(200, 10, 80, 30), BoxMode.IGNORE)
+
+    assert manager.exclude_regions() == [ignored.geometry()]
+
+
+def test_a_box_does_not_exclude_itself(manager):
+    """It would mask out the very region it is there to read."""
+    ignored = manager.add_box(QRect(200, 10, 80, 30), BoxMode.IGNORE)
+
+    excludes = [rect for rect in manager.exclude_regions() if rect != ignored.geometry()]
+
+    assert excludes == []
+
+
+def test_switching_a_box_to_ignore_starts_excluding_it(manager):
+    box = manager.add_box(QRect(10, 10, 100, 40), BoxMode.OFF)
+    assert manager.exclude_regions() == []
+
+    box.set_mode(BoxMode.IGNORE)
+
+    assert manager.exclude_regions() == [box.geometry()]
+
+
+# ── persistence ──────────────────────────────────────────────────────
+
+def test_a_layout_round_trips(manager):
+    manager.add_box(QRect(10, 20, 300, 80), BoxMode.OFF)
+    manager.add_box(QRect(400, 500, 200, 60), BoxMode.IGNORE)
+
+    restored = BoxManager(manager.app)
+    restored.load()
+    try:
+        assert [(box.geometry(), box.mode) for box in restored.boxes] == [
+            (QRect(10, 20, 300, 80), BoxMode.OFF),
+            (QRect(400, 500, 200, 60), BoxMode.IGNORE),
+        ]
+    finally:
+        restored.clear()
+
+
+def test_layouts_are_kept_per_preset(manager):
+    """Box layout follows the layout preset, like every other overlay."""
+    manager.add_box(QRect(10, 20, 300, 80), BoxMode.OFF)
+
+    manager.app.settings.setValue("layout_preset", "Second")
+    other = BoxManager(manager.app)
+    other.load()
+    try:
+        assert other.boxes == []
+    finally:
+        other.clear()
+        manager.app.settings.setValue("layout_preset", "Default")
+
+
+def test_a_moved_box_is_saved_where_it_was_left(manager):
+    """Until this fires, the stored position is the one it was drawn at."""
+    box = manager.add_box(QRect(10, 20, 300, 80), BoxMode.OFF)
+    box.setGeometry(QRect(600, 400, 300, 80))
+    box.moved.emit(box)
+
+    stored = json.loads(manager.app.settings.value(manager._settings_key()))
+
+    assert (stored[0]["x"], stored[0]["y"]) == (600, 400)
+
+
+def test_an_unreadable_layout_is_ignored_rather_than_fatal(manager):
+    manager.app.settings.setValue(manager._settings_key(), "{not json")
+
+    manager.load()
+
+    assert manager.boxes == []
+
+
+def test_a_layout_entry_missing_its_geometry_is_skipped(manager):
+    manager.app.settings.setValue(
+        manager._settings_key(),
+        json.dumps([{"id": "box_1", "mode": "off"}, {"id": "box_2", "x": 1, "y": 2, "w": 3, "h": 4, "mode": "off"}]),
+    )
+
+    manager.load()
+
+    assert [box.box_id for box in manager.boxes] == ["box_2"]
+
+
+def test_a_stored_layout_longer_than_the_cap_is_truncated(manager):
+    manager.app.settings.setValue(
+        manager._settings_key(),
+        json.dumps(
+            [{"id": f"box_{i}", "x": i, "y": 0, "w": 10, "h": 10, "mode": "off"} for i in range(MAX_BOXES + 3)]
+        ),
+    )
+
+    manager.load()
+
+    assert len(manager.boxes) == MAX_BOXES
+
+
+# ── state ────────────────────────────────────────────────────────────
+
+def test_a_box_shows_its_state(manager):
+    box = manager.add_box(QRect(10, 10, 100, 40), BoxMode.OFF)
+
+    box.set_state(BoxState.TRANSLATING)
+
+    assert box.state is BoxState.TRANSLATING
+
+
+def test_a_box_persists_its_geometry_under_its_own_id(manager):
+    """Drag, clamping and multi-monitor handling all come from the overlay
+    base class, keyed by window_id."""
+    box = manager.add_box(QRect(10, 10, 100, 40), BoxMode.OFF)
+
+    assert isinstance(box, TranslationBox)
+    assert box.window_id == box.box_id

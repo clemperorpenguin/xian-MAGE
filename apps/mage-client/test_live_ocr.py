@@ -27,7 +27,6 @@ import os
 import sys
 
 import numpy as np
-import pytest
 from PIL import Image
 from PyQt6.QtCore import QRect
 
