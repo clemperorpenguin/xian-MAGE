@@ -5,6 +5,7 @@ Tests for OCR routes.
 import pytest
 from fastapi.testclient import TestClient
 from xian_bridge.app import create_app
+from xian_bridge.routes import ocr
 import base64
 from PIL import Image
 import io
@@ -12,7 +13,24 @@ import io
 app = create_app()
 client = TestClient(app, base_url="http://127.0.0.1")
 
+# The detection endpoint needs xian-vl[ocr]; the render endpoint is pure PIL
+# and works either way.
+needs_engine = pytest.mark.skipif(
+    not ocr.IMPLEMENTED, reason="xian-vl[ocr] engine not installed"
+)
 
+
+@pytest.mark.skipif(ocr.IMPLEMENTED, reason="engine is installed")
+def test_ocr_reports_501_without_an_engine():
+    """No engine must mean a refusal, never a placeholder block to translate."""
+    resp = client.post(
+        "/ocr",
+        json={"image": "", "source_lang": "Auto", "mode": "text"},
+    )
+    assert resp.status_code == 501
+
+
+@needs_engine
 def test_ocr_validates_image_format():
     """Invalid base64 should return 400."""
     resp = client.post(
@@ -22,6 +40,7 @@ def test_ocr_validates_image_format():
     assert resp.status_code == 400
 
 
+@needs_engine
 def test_ocr_returns_block_structure():
     """A valid image should return blocks with quads."""
     # Generate a 10x10 white PNG

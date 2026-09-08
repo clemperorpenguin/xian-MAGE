@@ -24,6 +24,7 @@ function mockFileReader() {
 function mockDocument() {
   (globalThis as any).document = {
     querySelectorAll: () => [],
+    images: [],
   };
 }
 

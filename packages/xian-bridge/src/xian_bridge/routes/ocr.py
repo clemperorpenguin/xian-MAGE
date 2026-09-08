@@ -8,16 +8,57 @@ POST /ocr/render — Inpaint translated blocks onto an image (overlay mode)
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Literal, Optional
+import asyncio
 import base64
+import importlib.util
 import io
-import struct
 from PIL import Image
 
 router = APIRouter(prefix="/ocr")
 
-# True once the PaddleOCR engine is wired in place of the 501 stubs below.
-# /health reports this verbatim, so the two can never drift apart.
-IMPLEMENTED = True
+
+def _engine_installed() -> bool:
+    """Whether xian-vl's PP-OCRv5 reader can actually be built here.
+
+    ``xian-vl[ocr]`` is an optional extra; without ONNX Runtime the engine
+    imports but cannot run.
+    """
+    try:
+        return all(
+            importlib.util.find_spec(name) is not None
+            for name in ("onnxruntime", "xian.ocr.engine")
+        )
+    except (ImportError, ValueError):
+        return False
+
+
+# True when the PaddleOCR engine is present. /health reports this verbatim, so
+# the two can never drift apart — and MASHA only offers image translation when
+# there is an engine behind it.
+IMPLEMENTED = _engine_installed()
+
+# One engine per source language; building an ONNX session is expensive.
+_engines: dict[str, object] = {}
+
+
+def _engine_for(source_lang: str):
+    key = source_lang or "Auto"
+    if key not in _engines:
+        from xian.ocr import PaddleOcrEngine
+
+        _engines[key] = PaddleOcrEngine(source_language=None if key == "Auto" else key)
+    return _engines[key]
+
+
+#: Languages written without spaces between words, where joining detections on
+#: one baseline with a space is a visible error.
+_UNSPACED = {"Chinese", "Japanese", "Korean", "Thai"}
+
+
+def _decode_image(encoded: str) -> bytes:
+    """Bytes from either a bare base64 payload or a full ``data:`` URL."""
+    payload = encoded.split(",", 1)[1] if "," in encoded else encoded
+    return base64.b64decode(payload, validate=True)
 
 
 class OcrRequest(BaseModel):
@@ -56,54 +97,52 @@ async def ocr(request: OcrRequest):
     * ``mode="text"`` — standard reading-order blocks.
     * ``mode="comic"`` — speech-bubble grouping, panel ordering.
     """
+    if not IMPLEMENTED:
+        raise HTTPException(
+            status_code=501,
+            detail="OCR engine not installed — install the xian-vl[ocr] extra",
+        )
+
     # Decode base64 image
     try:
-        header, encoded = request.image.split(",", 1)
-        image_bytes = base64.b64decode(encoded)
+        image_bytes = _decode_image(request.image)
     except (ValueError, base64.binascii.Error):
         raise HTTPException(status_code=400, detail="Invalid base64 image")
 
     # Load image with PIL to get dimensions
     try:
-        pil_image = Image.open(io.BytesIO(image_bytes))
+        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         width, height = pil_image.size
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image: {e}")
 
-    # --- OCR implementation ---
-    # Use synthetic block when real engine unavailable
-    lines = [{
-        "quad": [0, 0, width, 0, width, height, 0, height],
-        "text": "(OCR engine not available — synthetic block)",
-        "confidence": 0.0,
-    }]
+    import numpy as np
 
-    # Convert lines to blocks
+    from xian.ocr.grouping import group_lines
+
+    # The engine reads BGR, and its `read` is synchronous by design — it
+    # expects a worker thread, never the loop every other request shares.
+    bgr = np.asarray(pil_image)[:, :, ::-1]
+    engine = _engine_for(request.source_lang)
+    try:
+        lines = await asyncio.to_thread(engine.read, bgr)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"OCR failed: {e}")
+
+    # Comic mode reads right-to-left: panel ordering is grouping's business.
+    grouped = group_lines(
+        lines,
+        space_delimited=request.source_lang not in _UNSPACED,
+        rtl=request.mode == "comic",
+    )
+
     blocks: list[Block] = []
-    for line in lines:
-        quad_pts = line.get("quad", line.get("points", [0, 0, width, 0, width, height, 0, height]))
-        # Flatten 4-point format to Quad
-        if len(quad_pts) == 8:
-            q = Quad(x1=quad_pts[0], y1=quad_pts[1], x2=quad_pts[2], y2=quad_pts[3],
-                     x3=quad_pts[4], y3=quad_pts[5], x4=quad_pts[6], y4=quad_pts[7])
-        else:
-            q = Quad(x1=0, y1=0, x2=width, y2=0, x3=width, y3=height, x4=0, y4=height)
-
-        # Apply comic balloon grouping if mode == "comic"
-        text = line.get("text", "")
-        if request.mode == "comic":
-            try:
-                from xian.ocr.comics import group_comic
-                # group_comic returns merged balloon blocks
-                # (simplified: use raw lines for now)
-                pass
-            except ImportError:
-                pass
-
+    for block in grouped:
+        x1, y1, x2, y2 = block.box
         blocks.append(Block(
-            quad=q,
-            text=text,
-            confidence=line.get("confidence", 0.0),
+            quad=Quad(x1=x1, y1=y1, x2=x2, y2=y1, x3=x2, y3=y2, x4=x1, y4=y2),
+            text=block.text,
+            confidence=block.confidence,
         ))
 
     return OcrResponse(blocks=blocks, size={"width": width, "height": height})
@@ -125,8 +164,7 @@ async def ocr_render(request: OcrRenderRequest):
     """
     # Decode base64 image
     try:
-        header, encoded = request.image.split(",", 1)
-        image_bytes = base64.b64decode(encoded)
+        image_bytes = _decode_image(request.image)
     except (ValueError, base64.binascii.Error):
         raise HTTPException(status_code=400, detail="Invalid base64 image")
 

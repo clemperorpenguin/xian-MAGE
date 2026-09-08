@@ -36,7 +36,8 @@ interface FetchImageMessage {
 interface DocumentJobMessage {
   type: 'MASHA_DOCUMENT_JOB';
   filename: string;
-  data: ArrayBuffer;
+  /** Base64 file bytes. `sendMessage` is JSON — an ArrayBuffer arrives as {}. */
+  data: string;
   sourceLang: string;
   targetLang: string;
 }
@@ -101,15 +102,35 @@ async function handleHoverTranslate(text: string): Promise<string> {
   });
 }
 
+/** Base64 for arbitrary bytes, in chunks so a large image cannot blow the stack. */
+function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
+  // Tolerate a full data: URL as well as bare base64.
+  const payload = base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64;
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 async function handleFetchImage(src: string): Promise<string | null> {
   try {
     const resp = await fetch(src);
-    const blob = await resp.blob();
-    const reader = new FileReader();
-    return await new Promise<string>((resolve) => {
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.readAsDataURL(blob);
-    });
+    if (!resp.ok) return null;
+    // No FileReader in an MV3 service worker — its global scope has neither
+    // FileReader nor a DOM, so readAsDataURL would throw ReferenceError and
+    // every cross-origin image would silently come back null.
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    const mime = resp.headers.get('content-type') || 'application/octet-stream';
+    return `data:${mime};base64,${bytesToBase64(bytes)}`;
   } catch {
     return null;
   }
@@ -117,11 +138,11 @@ async function handleFetchImage(src: string): Promise<string | null> {
 
 async function handleDocumentJob(
   filename: string,
-  data: ArrayBuffer,
+  data: string,
   sourceLang: string,
   targetLang: string,
 ): Promise<string> {
-  const blob = new Blob([data]);
+  const blob = new Blob([base64ToBytes(data)]);
   const form = new FormData();
   form.append('file', blob, filename);
   form.append('source_lang', sourceLang);

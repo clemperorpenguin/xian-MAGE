@@ -12,6 +12,8 @@ PDF support deferred to Luduan's roadmap.
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Literal, Optional
+import asyncio
+import re
 import uuid
 import os
 import tempfile
@@ -22,6 +24,51 @@ IMPLEMENTED = True
 
 # In-memory job store (will be replaced by persistent storage)
 _jobs: dict[str, dict] = {}
+
+# Strong references to the running tasks. asyncio only holds a weak one, so a
+# job whose task nobody keeps can be collected mid-translation.
+_tasks: set[asyncio.Task] = set()
+
+
+class JobCancelled(Exception):
+    """Raised inside a job when the client cancelled it."""
+
+
+async def _checkpoint(job_id: str) -> None:
+    """Honour pause/cancel between work items, and yield to the event loop.
+
+    Without this the control endpoints only rewrite a dict field: the job keeps
+    translating and then reports "completed" on work the user stopped.
+    """
+    while True:
+        status = _jobs.get(job_id, {}).get("status")
+        if status == "cancelled":
+            raise JobCancelled
+        if status != "paused":
+            await asyncio.sleep(0)
+            return
+        await asyncio.sleep(0.1)
+
+
+def _read_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8-sig") as handle:
+        return handle.read()
+
+
+def _write_text(path: str, content: str) -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+
+
+def _safe_filename(name: Optional[str], fallback: str) -> str:
+    """A filename that cannot escape the job's temp directory.
+
+    ``os.path.join`` discards its prefix entirely when handed an absolute path,
+    and honours ``..`` — so a multipart filename is never usable as-is.
+    """
+    base = os.path.basename((name or "").replace("\\", "/"))
+    cleaned = re.sub(r"[^\w.\-]", "_", base).strip(".")
+    return cleaned or fallback
 
 
 class DocumentRequest(BaseModel):
@@ -125,9 +172,9 @@ def parse_ass(content: str) -> list[dict]:
 async def process_document(job_id: str, file_path: str, fmt: str, source_lang: str, target_lang: str):
     """Background document processing."""
     try:
-        # Read file
-        with open(file_path, "r", encoding="utf-8-sig") as f:
-            content = f.read()
+        # Read file. Off the event loop: this handler shares it with every
+        # other bridge request.
+        content = await asyncio.to_thread(_read_text, file_path)
 
         _jobs[job_id]["status"] = "running"
 
@@ -141,6 +188,7 @@ async def process_document(job_id: str, file_path: str, fmt: str, source_lang: s
                 translated.append(f"[translated] {para}")
                 _jobs[job_id]["progress"] = (i + 1) / len(paragraphs)
                 _jobs[job_id]["pages_done"] = i + 1
+                await _checkpoint(job_id)
 
             # Build bilingual output
             if _jobs[job_id].get("bilingual", True):
@@ -162,6 +210,7 @@ async def process_document(job_id: str, file_path: str, fmt: str, source_lang: s
                 translated_cues.append({**cue, "text": f"[translated] {cue['text']}"})
                 _jobs[job_id]["progress"] = (i + 1) / len(cues)
                 _jobs[job_id]["pages_done"] = i + 1
+                await _checkpoint(job_id)
             output = format_subtitles(translated_cues, fmt)
 
         elif fmt == "html":
@@ -173,13 +222,17 @@ async def process_document(job_id: str, file_path: str, fmt: str, source_lang: s
                 if tag.get_text(strip=True):
                     tag.string = f"[translated] {tag.get_text()}"
                     _jobs[job_id]["progress"] += 0.01
+                    await _checkpoint(job_id)
             output = str(soup)
 
         elif fmt == "epub":
             # Delegate to Luduan's existing pipeline
             try:
                 import subprocess
-                result = subprocess.run(
+                # Five minutes of blocking subprocess would freeze every other
+                # request on this loop, so it runs on a worker thread.
+                result = await asyncio.to_thread(
+                    subprocess.run,
                     ["uv", "run", "-m", "luduan.main", file_path,
                      "--source-lang", source_lang, "--target-lang", target_lang,
                      "--bilingual"],
@@ -192,15 +245,17 @@ async def process_document(job_id: str, file_path: str, fmt: str, source_lang: s
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported format: {fmt}")
 
+        # Write output to a temp file
+        out_path = file_path + ".translated"
+        await asyncio.to_thread(_write_text, out_path, output)
+        _jobs[job_id]["download_url"] = out_path
+
         _jobs[job_id]["status"] = "completed"
         _jobs[job_id]["progress"] = 1.0
 
-        # Write output to a temp file
-        out_path = file_path + ".translated"
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(output)
-        _jobs[job_id]["download_url"] = out_path
-
+    except JobCancelled:
+        # The status the cancel endpoint set stands; nothing else to record.
+        pass
     except Exception as e:
         _jobs[job_id]["status"] = "failed"
         _jobs[job_id]["error"] = str(e)
@@ -256,10 +311,11 @@ async def start_document_job(
         }
         format = format_map.get(ext, "txt")
 
-    # Save uploaded file
+    # Save uploaded file under a name the client cannot use to write outside
+    # the job's own directory.
     job_id = str(uuid.uuid4())
     tmpdir = tempfile.mkdtemp(prefix="masha_doc_")
-    file_path = os.path.join(tmpdir, file.filename or f"document.{format}")
+    file_path = os.path.join(tmpdir, _safe_filename(file.filename, f"document.{format}"))
     content = await file.read()
     with open(file_path, "wb") as f:
         f.write(content)
@@ -274,10 +330,11 @@ async def start_document_job(
     }
 
     # Start processing in background
-    import asyncio
-    asyncio.create_task(process_document(
+    task = asyncio.create_task(process_document(
         job_id, file_path, format, source_lang, target_lang
     ))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
 
     return {"job_id": job_id}
 
@@ -318,5 +375,6 @@ async def cancel_job(job_id: str):
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    # process_document picks this up at its next checkpoint and stops.
     job["status"] = "cancelled"
     return {"status": "cancelled"}

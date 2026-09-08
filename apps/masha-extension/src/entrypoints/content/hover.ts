@@ -14,6 +14,9 @@ export interface HoverConfig {
   dwellMs: number;          // 300
 }
 
+/** What to do with a translation once it comes back. */
+export type HoverRenderer = (block: HTMLElement, translation: string) => void;
+
 export const DEFAULT_HOVER_CONFIG: HoverConfig = {
   mode: 'off',
   dwellMs: 300,
@@ -27,6 +30,7 @@ export const DEFAULT_HOVER_CONFIG: HoverConfig = {
 export function attachHover(
   bridge: PlatformBridge,
   config: HoverConfig = DEFAULT_HOVER_CONFIG,
+  render: HoverRenderer = showBubble,
 ): () => void {
   if (config.mode === 'off') return () => {};
 
@@ -50,21 +54,37 @@ export function attachHover(
 
     const target = e.target as HTMLElement;
     if (target === currentTarget) return;
+
+    // Drop the timer queued for the element the pointer just left. Without
+    // this a single mouse sweep leaves one pending timer per element it
+    // crossed, and every one of them fires a translation request.
+    clearDwell();
     currentTarget = target;
 
     // Debounce: wait for dwell before translating
     dwellTimer = setTimeout(() => {
-      if (!currentTarget) return;
-      const block = findTranslatableAncestor(currentTarget);
+      dwellTimer = null;
+      const block = findTranslatableAncestor(target);
       if (!block) return;
 
       // Signal the background to translate this single block
       // (reuses the page-translation pipeline with one segment)
-      chrome.runtime.sendMessage({
-        type: 'MASHA_HOVER_TRANSLATE',
-        nodeId: block.dataset.mashaNodeId || block.id || '',
-        text: block.textContent || '',
-      });
+      chrome.runtime.sendMessage(
+        {
+          type: 'MASHA_HOVER_TRANSLATE',
+          nodeId: block.dataset.mashaNodeId || block.id || '',
+          text: block.textContent || '',
+        },
+        (response) => {
+          // Reading lastError is what stops Chrome logging an unchecked error
+          // when the background went away mid-flight.
+          if (chrome.runtime.lastError) return;
+          if (target !== currentTarget) return;   // pointer has moved on
+          if (response?.success && response.translation) {
+            render(block, response.translation);
+          }
+        },
+      );
     }, config.dwellMs);
   }
 
@@ -81,7 +101,39 @@ export function attachHover(
   return () => {
     document.removeEventListener('mouseover', onMouseOver as EventListener);
     clearDwell();
+    removeBubble();
   };
+}
+
+const BUBBLE_ID = 'masha-hover-bubble';
+
+function removeBubble(): void {
+  document.getElementById(BUBBLE_ID)?.remove();
+}
+
+/**
+ * Default renderer: a floating bubble pinned under the hovered block.
+ *
+ * Only one is ever on the page — a new translation replaces the last.
+ */
+function showBubble(block: HTMLElement, translation: string): void {
+  removeBubble();
+
+  const rect = block.getBoundingClientRect();
+  const bubble = document.createElement('div');
+  bubble.id = BUBBLE_ID;
+  bubble.textContent = translation;
+  bubble.style.cssText = `
+    position: absolute; z-index: 2147483647;
+    left: ${rect.left + window.scrollX}px;
+    top: ${rect.bottom + window.scrollY + 4}px;
+    max-width: ${Math.max(rect.width, 240)}px;
+    padding: 6px 8px; border-radius: 4px;
+    background: rgba(20, 20, 20, 0.92); color: #fff;
+    font: 14px/1.4 system-ui, sans-serif;
+    pointer-events: none;
+  `;
+  document.body.appendChild(bubble);
 }
 
 /**

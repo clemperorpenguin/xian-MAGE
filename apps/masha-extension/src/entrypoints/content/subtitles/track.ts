@@ -47,7 +47,7 @@ export function createOverlay(video: HTMLVideoElement): SubtitleOverlay {
 export function attachTrackSubtitle(
   video: HTMLVideoElement,
   policy: SubtitlePolicy = DEFAULT_SUBTITLE_POLICY,
-  onTranslate: (text: string) => Promise<string>,
+  onTranslate: (text: string, signal?: AbortSignal) => Promise<string>,
 ): () => void {
   const overlay = createOverlay(video);
   let currentCueId: string | null = null;
@@ -83,15 +83,19 @@ export function attachTrackSubtitle(
     if (cueId === currentCueId) return;
     currentCueId = cueId;
 
-    // Cancel any in-flight translation
+    // Cancel any in-flight translation. The signal has to reach `onTranslate`
+    // to actually stop the request, and the id check below is what keeps a
+    // slow cue that ignores it from painting over a newer one.
     abortController?.abort();
     abortController = new AbortController();
 
-    onTranslate(text)
+    onTranslate(text, abortController.signal)
       .then(translated => {
+        if (cueId !== currentCueId) return;
         overlay.render(translated);
       })
       .catch(() => {
+        if (cueId !== currentCueId) return;
         overlay.render(text); // fall back to original
       });
   }

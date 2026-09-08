@@ -16,6 +16,15 @@ IMPLEMENTED = True
 # In-memory glossary store (in production, sourced from MAGE's wiki glossary)
 _glossary: dict[str, str] = {}
 
+# Stand-ins for the wiki glossary on a machine that has no MAGE checkout.
+_SAMPLE_TERMS: dict[str, str] = {
+    "user": "利用者",
+    "server": "サーバー",
+    "database": "データベース",
+    "network": "ネットワーク",
+    "application": "アプリケーション",
+}
+
 
 class GlossaryEntry(BaseModel):
     source: str
@@ -33,24 +42,22 @@ async def get_glossary():
     Return the current glossary.
 
     In production, this loads from MAGE's wiki glossary via
-    `xian.vl_processor.VLProcessor.load_glossary_from_wiki` and merges with
-    user overrides from the extension's options page.
+    `xian.pipeline.VLProcessor.load_glossary_from_wiki` and merges with user
+    overrides from the extension's options page.
     """
-    # Try to load from MAGE's wiki glossary
+    # Try to load from MAGE's wiki glossary. Anything can go wrong here —
+    # xian-vl absent, no wiki directory, a malformed page — and none of it is
+    # worth a 500 when the fallback is a working glossary.
     try:
-        from xian.vl_processor import VLProcessor
-        proc = VLProcessor()
-        wiki_terms = proc.load_glossary_from_wiki()
+        from xian.pipeline import VLProcessor
+
+        wiki_terms = await VLProcessor().load_glossary_from_wiki()
         _glossary.update(wiki_terms)
-    except ImportError:
-        # Fallback: use built-in sample terms
-        _glossary.setdefault("", "")
+    except Exception:
+        # Fall back to the built-in sample terms, but never over the top of
+        # terms the user added through the options page.
         if not _glossary:
-            _glossary["user"] = "利用者"
-            _glossary["server"] = "サーバー"
-            _glossary["database"] = "データベース"
-            _glossary["network"] = "ネットワーク"
-            _glossary["application"] = "アプリケーション"
+            _glossary.update(_SAMPLE_TERMS)
 
     return GlossaryResponse(terms=_glossary, epoch=hash(tuple(sorted(_glossary.items()))))
 

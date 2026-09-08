@@ -47,8 +47,10 @@ export function attachCompose(
       const value = getEditorValue(target);
       if (!value.trim()) return;
 
-      // Remove the three trailing spaces that triggered
-      const cleaned = value.replace(/   +$/, '');
+      // Remove the trailing spaces that triggered. The final keystroke was
+      // preventDefault()ed, so the field holds one fewer space than the
+      // trigger counts — match two-or-more rather than the literal three.
+      const cleaned = value.replace(/ {2,}$/, '');
       setEditorValue(target, cleaned);
 
       onTranslate(cleaned, config.targetLang)

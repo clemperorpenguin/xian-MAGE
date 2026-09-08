@@ -123,38 +123,75 @@ async function translateText(text: string, targetLang: string): Promise<string> 
   return data.choices?.[0]?.message?.content || text;
 }
 
+/**
+ * Every <img> currently showing `src`.
+ *
+ * Matching is on the *resolved* URL, not on the `src` attribute: callers pass
+ * `img.currentSrc || img.src`, so an attribute selector would miss every page
+ * whose markup is relative or protocol-relative (and would throw outright on a
+ * URL containing a quote).
+ */
+function imagesShowing(src: string): HTMLImageElement[] {
+  return Array.from(document.images).filter(
+    (img) => (img.currentSrc || img.src) === src,
+  );
+}
+
+/** One overlay canvas per image, so a re-translate replaces rather than stacks. */
+const overlays = new WeakMap<HTMLImageElement, HTMLCanvasElement>();
+
 function renderOverlay(imgSrc: string, blocks: Array<{ quad: any; text: string }>, translations: string[]): void {
-  // Find the image element
-  const imgs = document.querySelectorAll(`img[src="${imgSrc}"]`);
-  if (imgs.length === 0) return;
-  const img = imgs[0] as HTMLImageElement;
+  for (const img of imagesShowing(imgSrc)) {
+    const parent = img.parentElement;
+    if (!parent) continue;
 
-  // Create overlay canvas
-  const canvas = document.createElement('canvas');
-  canvas.style.cssText = `
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 9999;
-  `;
-  canvas.width = img.naturalWidth || img.width;
-  canvas.height = img.naturalHeight || img.height;
-  img.style.position = 'relative';
-  img.parentElement!.appendChild(canvas);
+    overlays.get(img)?.remove();
 
-  const ctx = canvas.getContext('2d')!;
+    // The canvas is absolutely positioned against the image's offset parent,
+    // so that parent has to be a containing block — setting `position` on the
+    // image itself does nothing for a sibling.
+    if (getComputedStyle(parent).position === 'static') {
+      parent.style.position = 'relative';
+    }
 
-  // Draw translations
-  for (let i = 0; i < blocks.length; i++) {
-    const q = blocks[i].quad;
-    const trans = translations[i];
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = `
+      position: absolute; pointer-events: none; z-index: 9999;
+      left: ${img.offsetLeft}px; top: ${img.offsetTop}px;
+      width: ${img.offsetWidth}px; height: ${img.offsetHeight}px;
+    `;
+    // Backing store in source pixels; CSS box in rendered pixels. That is what
+    // lets the OCR quads be drawn verbatim on a scaled-down image.
+    canvas.width = img.naturalWidth || img.width;
+    canvas.height = img.naturalHeight || img.height;
+    parent.appendChild(canvas);
+    overlays.set(img, canvas);
 
-    // Sample background color from the image
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-    ctx.fillRect(q.x1, q.y1, q.x2 - q.x1, q.y4 - q.y1);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) continue;
 
-    ctx.fillStyle = '#000';
-    ctx.font = '14px sans-serif';
-    ctx.textBaseline = 'top';
-    ctx.fillText(trans, q.x1 + 2, q.y1 + 2);
+    // Draw translations
+    for (let i = 0; i < blocks.length; i++) {
+      const q = blocks[i].quad;
+      const trans = translations[i];
+
+      // A quad is four corners and may be rotated; cover its bounding box.
+      const xs = [q.x1, q.x2, q.x3, q.x4];
+      const ys = [q.y1, q.y2, q.y3, q.y4];
+      const left = Math.min(...xs);
+      const top = Math.min(...ys);
+      const width = Math.max(...xs) - left;
+      const height = Math.max(...ys) - top;
+
+      // Sample background color from the image
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.fillRect(left, top, width, height);
+
+      ctx.fillStyle = '#000';
+      ctx.font = '14px sans-serif';
+      ctx.textBaseline = 'top';
+      ctx.fillText(trans, left + 2, top + 2);
+    }
   }
 }
 
@@ -181,8 +218,7 @@ async function renderInpaint(
   const result = await renderResp.json();
 
   // Swap image src with rendered version
-  const imgs = document.querySelectorAll(`img[src="${imgSrc}"]`);
-  for (const img of imgs) {
-    (img as HTMLImageElement).src = result.image;
+  for (const img of imagesShowing(imgSrc)) {
+    img.src = result.image;
   }
 }
