@@ -750,5 +750,113 @@
   "settings.tooltip.experimental_live": {
     "value": "Adds a Live button to the lens overlay, which keeps the selected region translated in place as it changes. Costs a vision call on every change.",
     "context": "Tooltip for the real-time translation checkbox"
+  },
+  "settings.label.live_engine": {
+    "value": "Live engine:",
+    "context": "Label for the setting choosing which engine drives live in-place translation"
+  },
+  "settings.tooltip.live_engine": {
+    "value": "Vision model: one call reads and translates the whole frame — no local models needed. Local OCR: reads on this machine and only sends text to be translated, so it re-translates only when the text actually changes.",
+    "context": "Tooltip explaining the trade-off between the two live translation engines"
+  },
+  "settings.option.live_engine.grounding": {
+    "value": "Vision model (default)",
+    "context": "Dropdown option: live translation done by a single vision-model call"
+  },
+  "settings.option.live_engine.ocr": {
+    "value": "Local OCR + translation",
+    "context": "Dropdown option: live translation done by reading text locally, then translating it"
+  },
+  "settings.label.ocr_detector": {
+    "value": "Text detector:",
+    "context": "Label for choosing which local text-detection model the OCR engine uses"
+  },
+  "settings.tooltip.ocr_detector": {
+    "value": "Fast is enough for most on-screen text. Accurate finds smaller and fainter text but takes noticeably longer per frame.",
+    "context": "Tooltip explaining the choice between the fast and accurate text detection models"
+  },
+  "settings.option.ocr_detector.mobile": {
+    "value": "Fast (recommended)",
+    "context": "Dropdown option: the smaller, quicker text detection model"
+  },
+  "settings.option.ocr_detector.server": {
+    "value": "Accurate (slower)",
+    "context": "Dropdown option: the larger, more accurate text detection model"
+  },
+  "settings.label.ignore_phrases": {
+    "value": "Ignore phrases:",
+    "context": "Label for a text box listing phrases that should never be translated"
+  },
+  "settings.tooltip.ignore_phrases": {
+    "value": "One phrase per line. Text containing a phrase is ignored, so a permanent label such as a clock or a health bar never counts as the screen changing. Prefix a line with exact: to match the whole line, or regex: for a pattern.",
+    "context": "Tooltip explaining the ignore-phrases list and its optional exact: and regex: prefixes"
+  },
+  "settings.checkbox.new_ui": {
+    "value": "Use the new interface (boxes and orb)",
+    "context": "Checkbox enabling the new user interface in place of the tray icon and keyboard shortcuts"
+  },
+  "settings.tooltip.new_ui": {
+    "value": "Replaces the keyboard shortcuts with translation boxes you place on screen and an orb you click. Restart to apply. The classic interface is unchanged and you can switch back at any time.",
+    "context": "Tooltip explaining what the new interface changes and that a restart is needed"
+  },
+  "newui.box.mode.live": {
+    "value": "Live",
+    "context": "Box mode button: the box translates continuously"
+  },
+  "newui.box.mode.once": {
+    "value": "Once",
+    "context": "Box mode button: the box translates when double-clicked, then holds"
+  },
+  "newui.box.mode.ignore": {
+    "value": "Ignore",
+    "context": "Box mode button: the area is hidden from every other box, for parts of the screen that change constantly"
+  },
+  "newui.box.mode.off": {
+    "value": "Off",
+    "context": "Box mode button: the box is kept but does nothing"
+  },
+  "newui.orb.title": {
+    "value": "Mage",
+    "context": "Default heading of the orb panel"
+  },
+  "newui.orb.tooltip": {
+    "value": "Click to open · double-click for the microphone · drag to move",
+    "context": "Tooltip on the orb explaining its three gestures"
+  },
+  "newui.orb.button.add_box": {
+    "value": "Add box",
+    "context": "Button that starts drawing a new translation box on screen"
+  },
+  "newui.orb.button.notes": {
+    "value": "Notes",
+    "context": "Button that opens the notes sidebar"
+  },
+  "newui.orb.button.settings": {
+    "value": "Settings",
+    "context": "Button that opens the settings dialog"
+  },
+  "newui.orb.button.mic": {
+    "value": "🎙",
+    "context": "Toggle button that starts and stops listening to speech"
+  },
+  "newui.orb.button.send": {
+    "value": "Send",
+    "context": "Button that sends the typed message"
+  },
+  "newui.orb.input.placeholder": {
+    "value": "Ask about what is on screen…",
+    "context": "Placeholder text in the orb's message box"
+  },
+  "newui.orb.status.listening": {
+    "value": "Listening…",
+    "context": "Orb panel heading while it is waiting for speech"
+  },
+  "newui.orb.status.transcribing": {
+    "value": "Transcribing…",
+    "context": "Orb panel heading while speech is being turned into text"
+  },
+  "newui.orb.status.translating": {
+    "value": "Translating…",
+    "context": "Orb panel heading while text is being translated"
   }
 }

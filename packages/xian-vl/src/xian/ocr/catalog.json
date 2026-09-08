@@ -1,0 +1,154 @@
+{
+  "base_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0",
+  "models": {
+    "PP-OCRv5_mobile_det": {
+      "id": "PP-OCRv5_mobile_det",
+      "role": "det",
+      "scripts": [],
+      "quality": "fast",
+      "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_det_infer.tar",
+      "onnx": {
+        "name": "model.onnx",
+        "bytes": 4826518,
+        "sha256": "a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d"
+      }
+    },
+    "PP-OCRv5_mobile_rec": {
+      "id": "PP-OCRv5_mobile_rec",
+      "role": "rec",
+      "scripts": [
+        "cjk"
+      ],
+      "quality": "fast",
+      "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_rec_infer.tar",
+      "onnx": {
+        "name": "model.onnx",
+        "bytes": 16560815,
+        "sha256": "63c60c8f4526a280e7e169571baf631a1bb7fdbb3fafae30a9825a841d6ea0b2"
+      },
+      "dict": {
+        "name": "dict.txt",
+        "bytes": 74012,
+        "sha256": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+        "characters": 18383
+      },
+      "input_shape": [
+        3,
+        48,
+        320
+      ]
+    },
+    "PP-OCRv5_server_det": {
+      "id": "PP-OCRv5_server_det",
+      "role": "det",
+      "scripts": [],
+      "quality": "accurate",
+      "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_det_infer.tar",
+      "onnx": {
+        "name": "model.onnx",
+        "bytes": 88116791,
+        "sha256": "10803475a591f7dc623e24670fb5752ec94d39a1f8cf069aac1b6f0ce19cfc85"
+      }
+    },
+    "PP-OCRv5_server_rec": {
+      "id": "PP-OCRv5_server_rec",
+      "role": "rec",
+      "scripts": [
+        "cjk"
+      ],
+      "quality": "accurate",
+      "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_rec_infer.tar",
+      "onnx": {
+        "name": "model.onnx",
+        "bytes": 84503027,
+        "sha256": "d9dc333c9c7b042c6dffb8e33d72b6f65c9c1d463d0a3c2f78174fea55e94752"
+      },
+      "dict": {
+        "name": "dict.txt",
+        "bytes": 74012,
+        "sha256": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+        "characters": 18383
+      },
+      "input_shape": [
+        3,
+        48,
+        320
+      ]
+    },
+    "eslav_PP-OCRv5_mobile_rec": {
+      "id": "eslav_PP-OCRv5_mobile_rec",
+      "role": "rec",
+      "scripts": [
+        "eslav"
+      ],
+      "quality": "fast",
+      "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/eslav_PP-OCRv5_mobile_rec_infer.tar",
+      "onnx": {
+        "name": "model.onnx",
+        "bytes": 7913660,
+        "sha256": "0106a48f38c256fe44445b06ae38ad99808b668066f520dc4348c2e93a8ec9c3"
+      },
+      "dict": {
+        "name": "dict.txt",
+        "bytes": 1663,
+        "sha256": "3e95f1581557162870cacdba5af91a4c6be2890710d395b0c3c7578e7ee5e6eb",
+        "characters": 517
+      },
+      "input_shape": [
+        3,
+        48,
+        320
+      ]
+    },
+    "korean_PP-OCRv5_mobile_rec": {
+      "id": "korean_PP-OCRv5_mobile_rec",
+      "role": "rec",
+      "scripts": [
+        "korean"
+      ],
+      "quality": "fast",
+      "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/korean_PP-OCRv5_mobile_rec_infer.tar",
+      "onnx": {
+        "name": "model.onnx",
+        "bytes": 13444816,
+        "sha256": "271a0562ad41c1499dff974c7e73f6d3e38a121212a9f7142ea20e9acb1cab26"
+      },
+      "dict": {
+        "name": "dict.txt",
+        "bytes": 47451,
+        "sha256": "a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7",
+        "characters": 11945
+      },
+      "input_shape": [
+        3,
+        48,
+        320
+      ]
+    },
+    "latin_PP-OCRv5_mobile_rec": {
+      "id": "latin_PP-OCRv5_mobile_rec",
+      "role": "rec",
+      "scripts": [
+        "latin"
+      ],
+      "quality": "fast",
+      "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/latin_PP-OCRv5_mobile_rec_infer.tar",
+      "onnx": {
+        "name": "model.onnx",
+        "bytes": 8068056,
+        "sha256": "b6d153feeb67b74ddfe513bc6ad120022d91e45af384587073fa05ae98b269b5"
+      },
+      "dict": {
+        "name": "dict.txt",
+        "bytes": 2616,
+        "sha256": "ccbcc45730b3fbbd9050c5bc74db6a99067141ef1035e3d14889a84a6b9b1aff",
+        "characters": 836
+      },
+      "input_shape": [
+        3,
+        48,
+        320
+      ]
+    }
+  }
+}

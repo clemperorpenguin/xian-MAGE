@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QDialog, QFormLayout,
     QLineEdit, QComboBox, QSpinBox, QPushButton, QLabel, QVBoxLayout,
     QHBoxLayout, QWidget, QCheckBox, QMessageBox, QInputDialog, QTabWidget, QSlider,
+    QPlainTextEdit,
     QFileDialog
 )
 from PyQt6.QtCore import Qt, QSettings, QRect, QTimer, QStandardPaths, pyqtSignal
@@ -75,7 +76,9 @@ from mage.settings_keys import (
     KEY_FAMILIAR_ENABLED, KEY_FAMILIAR_TTS, KEY_FAMILIAR_TYPE,
     KEY_FAMILIAR_CUSTOM_RECIPE, KEY_MEMORY_ENABLED, KEY_MEMORY_RETENTION_DAYS,
     KEY_BACKEND_PREFERENCE, KEY_NPU_POWER_MODE, KEY_LIVE_INTERVAL_MS,
-    KEY_COLLECTION_TIER, KEY_EXPERIMENTAL_LIVE, is_true,
+    KEY_COLLECTION_TIER, KEY_EXPERIMENTAL_LIVE, KEY_LIVE_ENGINE,
+    KEY_OCR_DETECTOR, KEY_IGNORE_PHRASES, KEY_NEW_UI,
+    DEFAULT_LIVE_ENGINE, LIVE_ENGINE_GROUNDING, LIVE_ENGINE_OCR, is_true,
 )
 from mage.utils.window_binder import WindowBinder
 from shared_types.state import state, t
@@ -345,6 +348,48 @@ class SettingsDialog(QDialog):
         self.live_interval_spin.setToolTip(t("settings.tooltip.live_interval"))
         features_layout.addRow(t("settings.label.live_interval"), self.live_interval_spin)
 
+        self.live_engine_combo = QComboBox()
+        self.live_engine_combo.addItem(t("settings.option.live_engine.grounding"), LIVE_ENGINE_GROUNDING)
+        self.live_engine_combo.addItem(t("settings.option.live_engine.ocr"), LIVE_ENGINE_OCR)
+        engine_idx = self.live_engine_combo.findData(
+            settings.value(KEY_LIVE_ENGINE, DEFAULT_LIVE_ENGINE)
+        )
+        if engine_idx >= 0:
+            self.live_engine_combo.setCurrentIndex(engine_idx)
+        self.live_engine_combo.setToolTip(t("settings.tooltip.live_engine"))
+        features_layout.addRow(t("settings.label.live_engine"), self.live_engine_combo)
+
+        self.ocr_detector_combo = QComboBox()
+        self.ocr_detector_combo.addItem(t("settings.option.ocr_detector.mobile"), "PP-OCRv5_mobile_det")
+        self.ocr_detector_combo.addItem(t("settings.option.ocr_detector.server"), "PP-OCRv5_server_det")
+        detector_idx = self.ocr_detector_combo.findData(
+            settings.value(KEY_OCR_DETECTOR, "PP-OCRv5_mobile_det")
+        )
+        if detector_idx >= 0:
+            self.ocr_detector_combo.setCurrentIndex(detector_idx)
+        self.ocr_detector_combo.setToolTip(t("settings.tooltip.ocr_detector"))
+        features_layout.addRow(t("settings.label.ocr_detector"), self.ocr_detector_combo)
+
+        self.ignore_phrases_edit = QPlainTextEdit()
+        self.ignore_phrases_edit.setPlainText(settings.value(KEY_IGNORE_PHRASES, "") or "")
+        self.ignore_phrases_edit.setFixedHeight(70)
+        self.ignore_phrases_edit.setToolTip(t("settings.tooltip.ignore_phrases"))
+        features_layout.addRow(t("settings.label.ignore_phrases"), self.ignore_phrases_edit)
+
+        # Only the OCR engine has a detector or a filter list to configure.
+        def _sync_ocr_rows(_=None):
+            is_ocr = self.live_engine_combo.currentData() == LIVE_ENGINE_OCR
+            self.ocr_detector_combo.setEnabled(is_ocr)
+            self.ignore_phrases_edit.setEnabled(is_ocr)
+
+        self.live_engine_combo.currentIndexChanged.connect(_sync_ocr_rows)
+        _sync_ocr_rows()
+
+        self.new_ui_cb = QCheckBox(t("settings.checkbox.new_ui"))
+        self.new_ui_cb.setToolTip(t("settings.tooltip.new_ui"))
+        self.new_ui_cb.setChecked(is_true(settings.value(KEY_NEW_UI, "false")))
+        features_layout.addRow(self.new_ui_cb)
+
         # The interval only means anything while the live overlay is running.
         self.live_interval_spin.setEnabled(self.experimental_live_cb.isChecked())
         self.experimental_live_cb.toggled.connect(self.live_interval_spin.setEnabled)
@@ -563,6 +608,10 @@ class SettingsDialog(QDialog):
             target_val = ""
         self.settings.setValue(KEY_TARGET_WINDOW_TITLE, target_val)
         self.settings.setValue("developer_options", "true" if self.dev_options_cb.isChecked() else "false")
+        self.settings.setValue(KEY_LIVE_ENGINE, self.live_engine_combo.currentData())
+        self.settings.setValue(KEY_OCR_DETECTOR, self.ocr_detector_combo.currentData())
+        self.settings.setValue(KEY_IGNORE_PHRASES, self.ignore_phrases_edit.toPlainText())
+        self.settings.setValue(KEY_NEW_UI, "true" if self.new_ui_cb.isChecked() else "false")
         self.accept()
 
     def _on_edit_layout(self):
@@ -740,9 +789,19 @@ class XianApp(QWidget):
         self._setup_telemetry()
         self._setup_familiar()
 
+        # Last, so the new shell can turn off the parts of the classic one it
+        # replaces rather than racing them into existence.
+        from mage.ui.shell import install_shell
+
+        self._shell = install_shell(self)
+
     def _setup_familiar(self):
         """Create the desktop familiar companion if Familiar Mode is enabled."""
         self.familiar = None
+        if is_true(self.settings.value(KEY_NEW_UI, "false")):
+            # The orb is the creature under the new UI, and two of them on
+            # screen at once is one too many.
+            return
         fam_val = self.settings.value(KEY_FAMILIAR_ENABLED, "false")
         if is_true(fam_val):
             self._create_familiar()
@@ -927,6 +986,50 @@ class XianApp(QWidget):
 
     # ── Live (inpainted) translation ─────────────────────────────────
 
+    def _make_live_worker(self, rect: QRect):
+        """Build whichever live engine the settings ask for.
+
+        The two workers emit the same ``regions_ready`` signal and share the
+        whole loop, so everything either side of this call — the frame stream,
+        the overlay, the teardown — is engine-agnostic and stays that way.
+        """
+        common = dict(
+            frame_stream=self._frame_stream,
+            source_lang=self.settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG),
+            target_lang=self.settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG),
+            interval_ms=int(self.settings.value(KEY_LIVE_INTERVAL_MS, constants.DEFAULT_LIVE_INTERVAL_MS)),
+            session_recorder=lambda orig, trans: self.processor.record_event("inpaint", orig, trans),
+        )
+
+        engine = self.settings.value(KEY_LIVE_ENGINE, DEFAULT_LIVE_ENGINE)
+        if engine == LIVE_ENGINE_OCR:
+            from mage.live_ocr import LiveOcrWorker
+            from xian.filters import TextFilter
+
+            return LiveOcrWorker(
+                self.processor,
+                rect,
+                detector_model=self.settings.value(KEY_OCR_DETECTOR, "") or None,
+                text_filter=TextFilter.from_settings(self.settings.value(KEY_IGNORE_PHRASES, "")),
+                exclude_regions=self._live_exclude_regions(),
+                **common,
+            )
+
+        from mage.live_lens import LiveLensWorker
+
+        return LiveLensWorker(self.processor, rect, **common)
+
+    def _live_exclude_regions(self) -> list:
+        """Rectangles masked out of the frame before it is read or hashed.
+
+        Supplied by the new UI's Ignore boxes; empty under the classic shell,
+        which has no gesture for them.
+        """
+        shell = getattr(self, "_shell", None)
+        if shell is None or not hasattr(shell, "exclude_regions"):
+            return []
+        return list(shell.exclude_regions())
+
     def start_live_lens(self, rect: QRect):
         """Continuously translate a region, painting over the original text."""
         if not self._ensure_model_ready():
@@ -934,7 +1037,6 @@ class XianApp(QWidget):
         self.stop_live_lens()
 
         from mage.capture.stream import FrameStream, screen_for_rect
-        from mage.live_lens import LiveLensWorker
         from mage.ui.inpaint_overlay import InpaintOverlay
 
         LensOverlayWindow._last_rect = rect
@@ -950,15 +1052,7 @@ class XianApp(QWidget):
         if not self._frame_stream.start():
             self._frame_stream = None
 
-        self._live_lens_worker = LiveLensWorker(
-            self.processor,
-            rect,
-            frame_stream=self._frame_stream,
-            source_lang=self.settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG),
-            target_lang=self.settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG),
-            interval_ms=int(self.settings.value(KEY_LIVE_INTERVAL_MS, constants.DEFAULT_LIVE_INTERVAL_MS)),
-            session_recorder=lambda orig, trans: self.processor.record_event("inpaint", orig, trans),
-        )
+        self._live_lens_worker = self._make_live_worker(rect)
         self._live_lens_worker.regions_ready.connect(self._on_live_regions)
         self._live_lens_worker.error.connect(self._on_live_lens_error)
         self._workers.append(self._live_lens_worker)
@@ -1006,6 +1100,10 @@ class XianApp(QWidget):
 
     def _on_live_regions(self, regions, rect: QRect, scale: float = 1.0):
         """Paint newly translated regions in place."""
+        shell = getattr(self, "_shell", None)
+        if shell is not None:
+            for region in regions:
+                shell.on_translation(region.original, region.translated)
         overlay = getattr(self, "inpaint_overlay", None)
         if overlay is None or not self._is_valid_widget(overlay):
             return
@@ -2739,6 +2837,15 @@ class XianApp(QWidget):
             super().closeEvent(event)
             return
         self._shutdown_done = True
+
+        shell = getattr(self, "_shell", None)
+        if shell is not None:
+            # First: it owns worker threads, and they have to be joined before
+            # the processor they are using goes away.
+            try:
+                shell.teardown()
+            except Exception as exc:
+                logger.error("Error tearing down the UI shell: %s", exc)
 
         # Stop periodic timers first so nothing new is dispatched mid-teardown.
         for timer_attr in ("_telemetry_timer", "dialogue_timer", "osd_timer", "window_tracking_timer"):

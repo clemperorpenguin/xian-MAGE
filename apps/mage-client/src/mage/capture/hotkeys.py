@@ -82,6 +82,11 @@ class _CommandModeCore:
     def __init__(self):
         self.leader_mod = "shift"
         self.overlay_toggle_key = "rshift"
+        # The new UI reaches every command by clicking, so it disarms this
+        # whole state machine.  The overlay-toggle gesture below stays armed
+        # either way: it is the escape hatch for a fullscreen game that has
+        # the pointer, and there is no clickable substitute for that.
+        self.command_mode_enabled = True
         self.command_mode_active = False
         self.command_mode_end_time = 0.0
         self.cinematic_mode_active = False
@@ -149,7 +154,7 @@ class _CommandModeCore:
             state.mod_clean = True
             return None
 
-        if is_leader:
+        if is_leader and self.command_mode_enabled:
             if state.mod_clean and (now - state.last_leader) < self.DOUBLE_TAP_SECONDS:
                 state.last_leader = 0.0
                 if self.command_mode_active:
@@ -231,6 +236,13 @@ class HotkeyListener(QObject):
     def set_leader_key(self, leader_string: str):
         with self._lock:
             self._core.set_leader_key(leader_string)
+
+    def set_command_mode_enabled(self, enabled: bool):
+        """Arm or disarm the leader double-tap and its letter commands."""
+        if self._core:
+            self._core.command_mode_enabled = bool(enabled)
+            if not enabled:
+                self._core.cancel_command_mode()
 
     def set_overlay_toggle_key(self, key_token: str):
         with self._lock:

@@ -22,7 +22,8 @@ See it in action on YouTube: https://www.youtube.com/watch?v=Izu_8pql7cE
 - **Click-Through Desktop Overlay**: Transparent PyQt6 overlay windows that display translated text directly over game HUDs and dialogue while remaining completely invisible to mouse inputs.
 - **Wayland Global Hotkey & Command OSD**: Trigger translation, OSD configurations, and sidebars seamlessly using customizable system-wide leader hotkeys.
 - **Dialogue Mode (Autoplay VNs / Story RPGs)**: Lock onto a screen region, translate automatically, and advance/refresh translations inline with a simple mouse click.
-- **Live In-Place Translation**: Lock onto a region and let MAGE paint translations directly over the original text — Google Lens style — refreshing as the screen changes, with no bubbles in the way.
+- **Live In-Place Translation**: Lock onto a region and let MAGE paint translations directly over the original text — Google Lens style — refreshing as the screen changes, with no bubbles in the way. Two engines: a vision model that reads and translates in one call, or **local OCR** (PP-OCRv5 through ONNX Runtime) that reads on your machine and sends only the text — so a screen full of particle effects over unchanged dialogue costs nothing at all, and a line you have seen before costs nothing twice. Run `scripts/export_ppocr_onnx.py` once to fetch the models.
+- **New Interface (optional)**: Instead of a leader key and a menu of letters, place **translation boxes** on screen and click an **orb**. Boxes stay where you put them, each with its own mode — Live, Once, or Ignore, which hides a ticking clock or an animated minimap from everything else. The orb is your translation log, a chat that already knows what is on screen, and a push-to-talk microphone. Turn it on in **Settings → Features**; the classic interface is untouched and stays the default.
 - **Session Memory**: MAGE remembers the text it has translated, the dialogue you have read, and the questions you have asked, so you can ask *"what do I do next?"* and get an answer grounded in your actual playthrough rather than generic wiki knowledge.
 - **NPU Offload (Ryzen AI)**: On XDNA 2 hardware, chat, translation, and speech can run on the NPU via Lemonade's FastFlowLM backend, leaving the GPU to the vision model. Check your machine with `./mage.sh --doctor-npu`.
 - **Visual Grounding Target Highlighting**: Ask the assistant *"where do I click?"* or *"where is the exit?"* and watch it highlight the exact physical coordinates on your screen.
@@ -138,3 +139,10 @@ The monorepo contains the core production-ready MAGE client as well as experimen
 ## 📜 License
 
 This project is licensed under the GNU General Public License v3.0. See the [LICENSE](LICENSE) file for details.
+
+Algorithms adapted from other projects are recorded in [NOTICE](NOTICE), with the upstream
+file named beside each one: **PaddleOCR** (Apache-2.0) for the PP-OCRv5 models, the DB
+contour postprocess and the crop rectification; **docTR** (Apache-2.0) and **EasyOCR**
+(Apache-2.0) for reading order and paragraph assembly; and **RSTGameTranslation** (GPL-3.0)
+for the text-level change gate, the settle-time debounce and the adaptive capture
+preprocessing.

@@ -57,6 +57,29 @@ We target local acceleration of Xian's own virtual multi-model collection `Xian-
 1. **AMD Radeon™ RX 7900 XTX** (Vulkan/ROCm acceleration)
 2. **Apple Silicon M4** (Metal acceleration)
 
+### Measured: the local OCR live engine
+
+Numbers from `apps/mage-client/test_live_ocr_benchmark.py`, run against the 33-frame
+screenshot corpus.  They come out through `record_property`, so a regression shows up as a
+changed value rather than only as a failure.
+
+| Measurement | Value | Why it matters |
+|---|---|---|
+| Region-sized frame, read (detect + rectify + recognize) | **110 ms median**, 344 ms max | The bar was 342 ms — what the retired OCR sidecar cost for the same work. This fits inside a 700 ms tick with room for the paint. |
+| Whole corpus, read | 284 ms median, 772 ms max | The maximum is a full 5 MP desktop carrying ~140 lines. Live mode reads a locked region, not a desktop, so it never pays this. |
+| Frames yielding no text | **0 of 33** | A frame that reads as empty paints nothing, which looks exactly like the overlay being broken. |
+| Identical re-read rate | **1.0** | The property the text gate depends on. A reader that disagrees with itself between identical frames would change the content hash every tick and hold nothing back. |
+| Translation calls vs. the pixel gate | 33 vs. 33 | **Not yet demonstrated.** The corpus is 33 distinct stills, so every frame is a genuine change and both gates fire on all of them. The ratio needs a sequence capture of real play. |
+
+If the read lands over budget on a given machine, the levers in order are
+`limit_side_len` 960 → 736 on the detector, then the server → mobile detector choice, then
+the recognition batch size.  Reach for a smaller *recognizer* last: recognition quality is
+what the engine is buying.
+
+Comparison points on the same hardware: one grounding call is ~1.0 s with the first line
+painted at ~460 ms, and the retired sidecar architecture cost ~2.25 s per changed frame
+(342 ms to read plus ~1.9 s for a separate batch translation).
+
 ---
 
 ## 3. Extracting Performance Metrics

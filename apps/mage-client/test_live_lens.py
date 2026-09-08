@@ -284,7 +284,9 @@ def test_background_is_sampled_once_per_box_per_frame():
     grew with the square of the region count — worst exactly where there are
     most regions, which is a whole-screen capture.
     """
-    import mage.live_lens as live_lens
+    # Patched on live_common, which is where the sampler lives now that both
+    # engines share the publish path.
+    import mage.live_common as live_lens
 
     worker = _Publisher()
     frame = Image.new("RGB", (400, 300), (30, 30, 30))

@@ -46,7 +46,22 @@ NPU_MODALITIES = ("llm", "asr", "translation", "vision")
 # translate them. TranslateGemma is labelled `vision` and is genuinely an
 # image-text-to-text model, yet cannot answer a grounding prompt, which is why
 # a name check still guards the modalities its labels would otherwise claim.
-TRANSLATION_KEYWORDS = ("translategemma", "madlad", "nllb", "opus-mt", "seamless", "towerinstruct")
+#
+# Hy-MT2 is the same story with louder labels: the server publishes it as
+# `chat`, and the 30B variant as `tool-calling` too, so without a name check it
+# would win the planner and answer every question by translating it. The live
+# OCR pipeline drives it as the line translator (``xian.translate``), which is
+# the one job it is for.
+TRANSLATION_KEYWORDS = (
+    "translategemma",
+    "madlad",
+    "nllb",
+    "opus-mt",
+    "seamless",
+    "towerinstruct",
+    "hy-mt2",
+    "hunyuan-mt",
+)
 
 #: Labels a purpose-built translation model may carry.
 TRANSLATION_LABELS = ("translation", "translate")

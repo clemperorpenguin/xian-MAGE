@@ -99,16 +99,35 @@ The honest state of Ryzen AI on Linux, as of Lemonade v10:
   inference. True dmabuf→NPU buffer import would require in-process inference and is out
   of scope at the frame rates this runs at.
 
-### 3. Live In-Place Translation — ✅ shipped (VLM path)
+### 3. Live In-Place Translation — ✅ shipped (both paths)
 The **Live** lens action continuously translates a locked region and paints each
 translation over the original text — Google Lens / DeepL style — instead of showing a
-bubble beside it.
+bubble beside it.  Two engines drive it, chosen in **Settings → Features → Live engine**.
+
+**Vision model** (default). One call detects, reads and translates together.
 
 * A perceptual-hash change gate skips inference on unchanged frames, and the worker
   recognizes its *own* overlay in the next capture, so the display does not flicker at
   steady state the way dialogue mode does.
 * Latency is bounded by the vision model: expect roughly 2–5 s per changed frame with a 4B
   VLM.
-* Remaining: a local ONNX text-detection pass to supply boxes (sub-second end to end, with
-  the LLM only translating the recognized lines), which would make this genuinely
-  real-time.
+* Needs no local models, and is the only path that can carry the glossary and the session
+  digest into the prompt.
+
+**Local OCR** — the local text-detection pass this roadmap used to list as remaining.
+PP-OCRv5 detection and per-script recognition run on this machine through ONNX Runtime,
+with OpenCV owning the DB contour postprocess and the crop rectification, and only the
+recognized text goes to the network, translated line by line by a pinned Hy-MT2.
+
+* Reading a region-sized frame takes ~110 ms (median over the screenshot corpus), against
+  the 342 ms the retired OCR sidecar cost.
+* The real gain is not per-frame cost but call count: with text in hand the gate can ask
+  whether the *text* changed rather than whether the pixels did, so a screen full of
+  particle effects over unchanged dialogue costs a read and no inference at all, and a
+  repeated line costs nothing because the cache has it.
+* Trade-off: Hy-MT2 takes no system prompt, so the glossary is enforced deterministically
+  on the output rather than asked for in the prompt, and cross-line pronoun context is
+  lost.  Run `scripts/export_ppocr_onnx.py` once to fetch and convert the models.
+* Remaining: the call-reduction ratio has only been floor-tested against 33 distinct
+  stills, where every frame is a genuine change.  It needs a sequence capture of real play
+  to measure properly.
