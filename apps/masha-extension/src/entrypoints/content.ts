@@ -19,211 +19,168 @@
  */
 
 /*
- * Content script (WXT). Realizes the page-facing half of PlatformBridge:
- * selection + page-context capture, the non-destructive overlay, and
- * replace-in-place for editable inputs. The model call itself is delegated to
- * the background worker (see background.ts).
+ * Content script (WXT) — the composition root for everything page-facing.
+ *
+ * It owns no behaviour of its own. Each feature lives in `content/`, is turned
+ * on by a setting, and hands back a detach function; this file decides which
+ * are on, routes the messages that arrive from the background, and re-applies
+ * the set whenever the settings change.
+ *
+ * The model is never called from here. A content script's `fetch` is judged by
+ * the page's CORS policy, not the extension's, so every request goes to the
+ * background worker.
  */
 
-import { SelectionContext } from '../platform/bridge';
+import { getConfig } from '../utils/config';
+import { MashaConfig } from '../platform/bridge';
+import { attachComicReader } from './content/comic';
+import { attachCompose } from './content/compose';
+import { attachHover } from './content/hover';
+import { translateImage, DEFAULT_IMAGE_CONFIG } from './content/images';
+import {
+  applySegment,
+  isPageTranslated,
+  translateCurrentPage,
+  undoPageTranslation,
+} from './content/page';
+import { showError, showNotice, translateSelection } from './content/selection';
+import { attachSubtitles } from './content/subtitles';
 
-const BLOCK_SELECTOR = 'p, li, blockquote, td, th, article, section, main, div';
+/** Translate a lone string through the background worker. */
+async function translateText(text: string, targetLang?: string): Promise<string> {
+  const response = await chrome.runtime.sendMessage({
+    type: 'MASHA_TRANSLATE_TEXT',
+    text,
+    targetLang,
+  });
+  if (!response?.success) throw new Error(response?.error || 'Translation failed.');
+  return response.translation as string;
+}
 
 export default defineContentScript({
   matches: ['<all_urls>'],
   main() {
-    let activeOverlay: HTMLElement | null = null;
+    /** Detach functions for the features currently switched on. */
+    let detachers: Array<() => void> = [];
 
-    /** The editable element holding the current selection, if any. */
-    function editableTarget(): HTMLInputElement | HTMLTextAreaElement | null {
-      const el = document.activeElement;
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
-        const input = el as HTMLInputElement | HTMLTextAreaElement;
-        if (input.selectionStart !== null && input.selectionStart !== input.selectionEnd) {
-          return input;
+    function detachFeatures(): void {
+      for (const detach of detachers) {
+        try {
+          detach();
+        } catch {
+          // A feature that fails to clean up must not block the others.
         }
       }
-      return null;
+      detachers = [];
     }
 
-    /** Walk up from a node to the nearest meaningful block container. */
-    function nearestBlock(node: Node | null): Element | null {
-      let el = node instanceof Element ? node : node?.parentElement ?? null;
-      while (el && el !== document.body) {
-        if (el.matches?.(BLOCK_SELECTOR)) return el;
-        el = el.parentElement;
-      }
-      return document.body;
-    }
+    /** Turn on exactly the features the settings ask for, and nothing else. */
+    function attachFeatures(config: MashaConfig): void {
+      detachFeatures();
 
-    /** Capture the selection plus surrounding page context (title + section). */
-    function getSelectionContext(): SelectionContext | null {
-      const input = editableTarget();
-      if (input) {
-        const text = input.value.substring(input.selectionStart!, input.selectionEnd!).trim();
-        if (!text) return null;
-        return { text, context: input.value.trim(), isEditable: true };
+      if (config.hoverMode !== 'off') {
+        detachers.push(attachHover({ mode: config.hoverMode, dwellMs: 300 }));
       }
 
-      const selection = window.getSelection();
-      const text = selection?.toString().trim() || '';
-      if (!text) return null;
-
-      let context = document.title ? `${document.title}\n` : '';
-      if (selection && selection.rangeCount > 0) {
-        const block = nearestBlock(selection.getRangeAt(0).commonAncestorContainer);
-        const blockText = (block as HTMLElement)?.innerText?.trim() || '';
-        if (blockText && blockText !== text) context += blockText;
-      }
-      return { text, context: context.trim(), isEditable: false };
-    }
-
-    function removeOverlay() {
-      activeOverlay?.remove();
-      activeOverlay = null;
-    }
-
-    /** Anchor a freshly created box near the current selection/caret. */
-    function anchorBox(box: HTMLElement) {
-      const selection = window.getSelection();
-      let left = window.scrollX + 80;
-      let top = window.scrollY + 80;
-      if (selection && selection.rangeCount > 0) {
-        const rect = selection.getRangeAt(0).getBoundingClientRect();
-        if (rect.width || rect.height) {
-          left = rect.left + window.scrollX;
-          top = rect.bottom + window.scrollY + 8;
-        }
-      }
-      box.style.left = `${Math.max(8, Math.min(left, window.innerWidth - 360))}px`;
-      box.style.top = `${Math.max(8, top)}px`;
-    }
-
-    function baseBox(): HTMLElement {
-      removeOverlay();
-      const box = document.createElement('div');
-      activeOverlay = box;
-      box.style.cssText = [
-        'position:absolute',
-        'z-index:2147483647',
-        'max-width:340px',
-        'padding:12px 14px',
-        'background:#0f172a',
-        'color:#f8fafc',
-        'border:1px solid #334155',
-        'border-radius:12px',
-        'box-shadow:0 10px 30px -10px rgba(0,0,0,0.6)',
-        'font:13px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
-      ].join(';');
-      anchorBox(box);
-      // Dismiss on outside click.
-      setTimeout(() => {
-        document.addEventListener(
-          'mousedown',
-          (e) => {
-            if (activeOverlay && !activeOverlay.contains(e.target as Node)) removeOverlay();
+      if (config.composeEnabled) {
+        detachers.push(attachCompose(
+          {
+            enabled: true,
+            trigger: { windowMs: 900, trigger: 'triple-space' },
+            targetLang: config.targetLang,
           },
-          { once: true },
-        );
-      }, 0);
-      document.body.appendChild(box);
-      return box;
-    }
-
-    function showLoading() {
-      const box = baseBox();
-      box.innerHTML =
-        '<div style="display:flex;align-items:center;gap:8px;color:#cbd5e1">' +
-        '<span style="width:14px;height:14px;border:2px solid rgba(255,255,255,0.25);' +
-        'border-top-color:#a855f7;border-radius:50%;display:inline-block;' +
-        'animation:masha-spin 0.6s linear infinite"></span> Translating…</div>' +
-        '<style>@keyframes masha-spin{to{transform:rotate(360deg)}}</style>';
-    }
-
-    function showError(message: string) {
-      const box = baseBox();
-      box.style.borderColor = '#ef4444';
-      box.textContent = `⚠️ ${message}`;
-    }
-
-    function showOverlay(selection: string, translation: string) {
-      const box = baseBox();
-
-      const body = document.createElement('div');
-      body.textContent = translation;
-      body.style.whiteSpace = 'pre-wrap';
-
-      const bar = document.createElement('div');
-      bar.style.cssText =
-        'margin-top:10px;padding-top:8px;border-top:1px solid #1e293b;' +
-        'display:flex;gap:14px;font-size:11px;color:#94a3b8';
-
-      let showingOriginal = false;
-      const toggle = document.createElement('button');
-      const copy = document.createElement('button');
-      for (const b of [toggle, copy]) {
-        b.style.cssText = 'background:none;border:none;color:#a5b4fc;cursor:pointer;padding:0;font:inherit';
+          (text, targetLang) => translateText(text, targetLang),
+        ));
       }
-      toggle.textContent = 'Show original';
-      toggle.onclick = () => {
-        showingOriginal = !showingOriginal;
-        body.textContent = showingOriginal ? selection : translation;
-        toggle.textContent = showingOriginal ? 'Show translation' : 'Show original';
-      };
-      copy.textContent = 'Copy';
-      copy.onclick = () => {
-        navigator.clipboard?.writeText(translation).then(() => {
-          copy.textContent = 'Copied!';
-          setTimeout(() => (copy.textContent = 'Copy'), 1200);
-        });
-      };
 
-      bar.append(toggle, copy);
-      box.append(body, bar);
-    }
-
-    /** Replace the selection inside an editable input (composition mode). */
-    function replaceSelection(text: string) {
-      const input = editableTarget();
-      if (!input) return;
-      const { selectionStart: start, selectionEnd: end, value } = input;
-      input.value = value.substring(0, start!) + text + value.substring(end!);
-      input.selectionStart = input.selectionEnd = start! + text.length;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.focus();
-    }
-
-    async function runTranslation() {
-      const captured = getSelectionContext();
-      if (!captured) {
-        showError('Select some text first.');
-        return;
+      if (config.subtitlesEnabled) {
+        detachers.push(attachSubtitles(
+          {
+            serverUrl: config.serverUrl,
+            asrModel: config.asrModel,
+            audio: config.audioSubtitlesEnabled,
+          },
+          (text) => translateText(text),
+        ));
       }
-      showLoading();
+
+      if (config.comicsEnabled) {
+        detachers.push(attachComicReader(
+          { rtl: config.comicRtl, lookahead: 2 },
+          {
+            ...DEFAULT_IMAGE_CONFIG,
+            mode: 'comic',
+            sourceLang: config.sourceLang,
+            targetLang: config.targetLang,
+          },
+        ));
+      }
+    }
+
+    getConfig().then(attachFeatures);
+
+    // The popup writes settings; every open tab picks them up without a reload.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.config) return;
+      getConfig().then(attachFeatures);
+    });
+
+    async function runPageTranslation(): Promise<void> {
       try {
-        const response = await chrome.runtime.sendMessage({
-          type: 'MASHA_TRANSLATE',
-          payload: captured,
-        });
-        if (!response?.success) {
-          showError(response?.error || 'Translation failed.');
-          return;
-        }
-        if (captured.isEditable) {
-          replaceSelection(response.translation);
-          removeOverlay();
-        } else {
-          showOverlay(captured.text, response.translation);
-        }
-      } catch {
-        showError('Could not reach the extension background.');
+        const { segmentCount, successCount } = await translateCurrentPage();
+        if (segmentCount === 0) showNotice('Nothing on this page to translate.');
+        else showNotice(`Translated ${successCount} of ${segmentCount} blocks.`);
+      } catch (error) {
+        showError(error instanceof Error ? error.message : 'Page translation failed.');
       }
     }
 
-    // Trigger relayed from the background context-menu click.
-    chrome.runtime.onMessage.addListener((message: { type?: string }) => {
-      if (message?.type === 'MASHA_TRIGGER') runTranslation();
+    async function runImageTranslation(src: string, config: MashaConfig): Promise<void> {
+      try {
+        await translateImage(src, {
+          ...DEFAULT_IMAGE_CONFIG,
+          mode: 'text',
+          sourceLang: config.sourceLang,
+          targetLang: config.targetLang,
+        });
+      } catch (error) {
+        showError(error instanceof Error ? error.message : 'Image translation failed.');
+      }
+    }
+
+    // Commands relayed from the background: the context menu, and the popup.
+    chrome.runtime.onMessage.addListener((message: any, _sender, sendResponse) => {
+      switch (message?.type) {
+        case 'MASHA_TRIGGER':
+          translateSelection();
+          return false;
+
+        case 'MASHA_PAGE_TRANSLATE':
+          runPageTranslation();
+          return false;
+
+        case 'MASHA_PAGE_UNDO':
+          undoPageTranslation();
+          showNotice('Translations removed.');
+          return false;
+
+        case 'MASHA_PAGE_STATE':
+          sendResponse({ translated: isPageTranslated() });
+          return false;
+
+        // One translated block, streamed while the rest of the page is still
+        // in flight — this is what makes a long page fill in from the top.
+        case 'MASHA_SEGMENT':
+          applySegment(message.id, message.translated);
+          return false;
+
+        case 'MASHA_IMAGE_TRANSLATE':
+          getConfig().then((config) => runImageTranslation(message.src, config));
+          return false;
+
+        default:
+          return false;
+      }
     });
   },
 });

@@ -3,12 +3,15 @@
   "version": "1.0.0",
   "description": "MASHA - Multilingual Access & Site Handling Assistant",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wxt",
     "dev:firefox": "wxt -b firefox",
     "build": "wxt build",
     "build:firefox": "wxt build -b firefox",
-    "compile": "tsc --noEmit"
+    "compile": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -22,6 +25,7 @@
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
     "typescript": "^5.3.3",
+    "vitest": "^1.6.0",
     "wxt": "^0.20.26"
   },
   "overrides": {
