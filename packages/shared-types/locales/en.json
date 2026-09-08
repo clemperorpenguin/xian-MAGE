@@ -791,14 +791,6 @@
     "value": "One phrase per line. Text containing a phrase is ignored, so a permanent label such as a clock or a health bar never counts as the screen changing. Prefix a line with exact: to match the whole line, or regex: for a pattern.",
     "context": "Tooltip explaining the ignore-phrases list and its optional exact: and regex: prefixes"
   },
-  "settings.checkbox.new_ui": {
-    "value": "Use the new interface (boxes and orb)",
-    "context": "Checkbox enabling the new user interface in place of the tray icon and keyboard shortcuts"
-  },
-  "settings.tooltip.new_ui": {
-    "value": "Replaces the keyboard shortcuts with translation boxes you place on screen and an orb you click. Restart to apply. The classic interface is unchanged and you can switch back at any time.",
-    "context": "Tooltip explaining what the new interface changes and that a restart is needed"
-  },
   "newui.box.mode.live": {
     "value": "Live",
     "context": "Box mode button: the box translates continuously"
@@ -858,5 +850,29 @@
   "newui.orb.status.translating": {
     "value": "Translating…",
     "context": "Orb panel heading while text is being translated"
+  },
+  "settings.label.translation_model": {
+    "value": "Translation model:",
+    "context": "Label for choosing which translation model size is used for all text translation"
+  },
+  "settings.tooltip.translation_model": {
+    "value": "All text translation uses Hy-MT2. The smaller model keeps up with a fast-moving screen; the larger one reads better on long or difficult lines.",
+    "context": "Tooltip explaining the choice between the two Hy-MT2 translation model sizes"
+  },
+  "settings.option.translation_model.Hy-MT2-1.8B-GGUF-Q4_K_M": {
+    "value": "Fast (1.8B, recommended)",
+    "context": "Dropdown option: the smaller, quicker translation model"
+  },
+  "settings.option.translation_model.Hy-MT2-7B-GGUF-Q4_K_M": {
+    "value": "Accurate (7B)",
+    "context": "Dropdown option: the larger, more accurate translation model"
+  },
+  "newui.orb.button.translate_once": {
+    "value": "Translate once",
+    "context": "Button that translates a screen region a single time without keeping a box there"
+  },
+  "newui.orb.tooltip.translate_once": {
+    "value": "Drag over anything on screen to translate it once. The translation fades on its own and no box is left behind.",
+    "context": "Tooltip explaining the one-off translation gesture"
   }
 }

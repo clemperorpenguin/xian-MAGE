@@ -16,10 +16,12 @@
 #
 # Contact: clem@pendragon.systems (Clementine Pendragon, c/o Xian Project Development)
 
-"""Choosing between the classic surface layer and the new one.
+"""Installing the interface.
 
-The contract the whole feature rests on: turning the new UI *off* has to leave
-the classic one exactly as it was.
+There used to be two surface layers and a setting to choose between them.
+There is one now, so what these check is that it comes up, that the leader key
+and its letter menu do not, and that the one gesture with no clickable
+substitute still does.
 """
 
 import os
@@ -32,8 +34,7 @@ from PyQt6.QtWidgets import QApplication, QWidget
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from mage.capture.hotkeys import _CommandModeCore  # noqa: E402
-from mage.settings_keys import KEY_NEW_UI  # noqa: E402
-from mage.ui.shell import ClassicShell, NewShell, install_shell  # noqa: E402
+from mage.ui.shell import NewShell, Shell, install_shell  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -53,11 +54,10 @@ class FakeListener:
 class FakeApp(QWidget):
     """Only what a shell is allowed to touch."""
 
-    def __init__(self, new_ui: bool):
+    def __init__(self):
         super().__init__()
         self.settings = QSettings("XianProject", "MageShellTest")
         self.settings.clear()
-        self.settings.setValue(KEY_NEW_UI, "true" if new_ui else "false")
         self.hotkey_listener = FakeListener()
         self.processor = object()
         self.opened_settings = 0
@@ -71,26 +71,15 @@ class FakeApp(QWidget):
 
 
 @pytest.fixture
-def classic_app():
-    app = FakeApp(new_ui=False)
-    yield app
-    app.settings.clear()
-
-
-@pytest.fixture
 def new_app():
-    app = FakeApp(new_ui=True)
+    app = FakeApp()
     yield app
     app.settings.clear()
 
 
-# ── which shell ──────────────────────────────────────────────────────
+# ── installing ───────────────────────────────────────────────────────
 
-def test_the_setting_off_gives_the_classic_shell(classic_app):
-    assert isinstance(install_shell(classic_app), ClassicShell)
-
-
-def test_the_setting_on_gives_the_new_shell(new_app):
+def test_the_interface_comes_up(new_app):
     shell = install_shell(new_app)
     try:
         assert isinstance(shell, NewShell)
@@ -98,8 +87,9 @@ def test_the_setting_on_gives_the_new_shell(new_app):
         shell.teardown()
 
 
-def test_a_broken_new_shell_falls_back_to_the_classic_one(new_app, monkeypatch):
-    """A user who cannot start is a user who cannot switch the setting back."""
+def test_a_broken_interface_does_not_take_the_app_down(new_app, monkeypatch):
+    """A bare shell answers the questions the app asks of it and nothing
+    else — a poor experience, but a running one."""
     import mage.ui.new.boxes as boxes
 
     def explode(*args, **kwargs):
@@ -107,18 +97,15 @@ def test_a_broken_new_shell_falls_back_to_the_classic_one(new_app, monkeypatch):
 
     monkeypatch.setattr(boxes, "BoxManager", explode)
 
-    assert isinstance(install_shell(new_app), ClassicShell)
+    shell = install_shell(new_app)
+
+    assert type(shell) is Shell
+    assert shell.exclude_regions() == []
 
 
 # ── the hotkeys ──────────────────────────────────────────────────────
 
-def test_the_classic_shell_leaves_command_mode_armed(classic_app):
-    install_shell(classic_app)
-
-    assert classic_app.hotkey_listener.command_mode_enabled is True
-
-
-def test_the_new_shell_disarms_command_mode(new_app):
+def test_the_shell_disarms_command_mode(new_app):
     """No more hotkey soup: every command is a click."""
     shell = install_shell(new_app)
     try:
@@ -176,11 +163,6 @@ def test_an_armed_leader_still_opens_command_mode():
 
 
 # ── what the shell exposes ───────────────────────────────────────────
-
-def test_the_classic_shell_excludes_nothing(classic_app):
-    """It has no gesture for exclusions, so the live worker must get none."""
-    assert install_shell(classic_app).exclude_regions() == []
-
 
 def test_the_panel_buttons_reach_the_app(new_app):
     shell = install_shell(new_app)

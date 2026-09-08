@@ -16,22 +16,34 @@
 #
 # Contact: clem@pendragon.systems (Clementine Pendragon, c/o Xian Project Development)
 
-"""The orb: one object that is the log, the chat and the microphone.
+"""The orb: the familiar, doing the job the hotkeys used to do.
 
-Under the classic UI these are three surfaces reached by three chords after a
-double-tap. Here they are three faces of one thing you can see and click, and
-the orb's own appearance carries the status a HUD would otherwise need a row
-of indicators for.
+The orb and the familiar were two creatures for the same screen, so they are
+one now.  The familiar already had a body, five species, a conjure system that
+authors new ones, a speech bubble, and — the part that made the merge obvious —
+a state for *a translation is running*, one for *it finished* and one for *it
+failed*.  All the orb ever added on top of that was a status colour and a
+click.
 
-The log is a *view* over data the app already writes — every box translation
-goes through ``processor.record_event`` regardless — not a second store. That
-matters for the chat: the recent translations are already in the scroll-back,
-so "what did that last line mean?" needs no attachment step.
+So the orb is a :class:`~mage.ui.familiar_pet.FamiliarPet` with three things
+bolted on:
 
-A new widget rather than a new familiar species. The familiar is a classic-UI
-feature with its own art, states and conjure system, and coupling this to
-1500 lines of that would make each one harder to change. The new shell simply
-does not construct a familiar, so only one creature is ever on screen.
+* **A click opens the panel** — the log, the chat and the microphone — where
+  the familiar used to open the chat sidebar.
+* **A double-click listens.**  While it does, the orb wears a ring, because a
+  microphone that is on and does not look on is how people talk to a machine
+  that is not listening.
+* **Working states map onto the familiar's own.**  Reading and translating are
+  ``CAST``, a failure is ``SAD``.  Nothing new had to be invented for it.
+
+Right-click still opens the familiar's menu, so species and Conjure… are where
+they always were.
+
+The panel's log is a *view* over what ``record_event`` already writes, not a
+second store.  That is what lets the chat answer questions about lines that are
+already in its scroll-back.  Box translations go to the log and are painted in
+place by the overlay; the speech bubble is kept for the things that have no box
+of their own — what the orb heard, and what it says back.
 """
 
 from __future__ import annotations
@@ -40,8 +52,8 @@ import html
 import logging
 import time
 
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen, QRadialGradient
+from PyQt6.QtCore import QPoint, QRect, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -52,6 +64,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from mage.ui.familiar_pet import FamiliarPet, FamiliarState
 from mage.ui.overlay_base import MageOverlayWindow
 from shared_types.state import t
 
@@ -59,10 +72,10 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["Orb", "OrbPanel", "OrbState"]
 
-ORB_SIZE = 56
-
 
 class OrbState:
+    """What the orb is doing.  Mostly an alias for how the familiar feels."""
+
     IDLE = "idle"
     LISTENING = "listening"
     READING = "reading"
@@ -70,105 +83,111 @@ class OrbState:
     SPEAKING = "speaking"
 
 
-_STATE_COLORS = {
-    OrbState.IDLE: QColor(120, 140, 190),
-    OrbState.LISTENING: QColor(120, 210, 140),
-    OrbState.READING: QColor(250, 200, 90),
-    OrbState.TRANSLATING: QColor(190, 140, 250),
-    OrbState.SPEAKING: QColor(250, 140, 170),
-}
+#: Orb states that mean "working".  The familiar already holds a casting pose
+#: for exactly this, with its own timing, so the orb asks for that rather than
+#: setting a mood behind its back.
+_BUSY_STATES = frozenset({OrbState.READING, OrbState.TRANSLATING})
+
+#: Ring colour while listening.  Not the species accent: this says something
+#: about the microphone, not about the creature wearing it.
+_LISTENING_RING = QColor(120, 210, 140)
+
+#: How fast the listening ring breathes, in radians per behaviour tick.
+_RING_SPEED = 0.12
 
 
-class Orb(MageOverlayWindow):
-    """A small always-on-top circle. Click it; everything is behind it."""
+class Orb(FamiliarPet):
+    """The familiar, wired to the panel instead of to the chat sidebar."""
 
     clicked = pyqtSignal()
     mic_toggled = pyqtSignal(bool)
 
-    def __init__(self, app=None, parent=None):
-        super().__init__("orb", app=app, parent=parent)
-        self.setFixedSize(ORB_SIZE, ORB_SIZE)
+    def __init__(self, app=None, parent=None, species=None):
+        super().__init__(app=app, parent=parent, species=species)
         self.state = OrbState.IDLE
         self.mic_active = False
-        self._pulse = 0.0
-        self._dragged = False
+        self._ring_phase = 0.0
 
-        # One timer for every animation the orb has; it only runs while there
-        # is something to animate, so an idle orb costs nothing.
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(t("newui.orb.tooltip"))
+    # ── status ───────────────────────────────────────────────────────
 
     def set_state(self, state: str) -> None:
+        """Say what the orb is doing, in the familiar's own vocabulary."""
         self.state = state
-        if state == OrbState.IDLE and not self.mic_active:
-            self._timer.stop()
-            self._pulse = 0.0
-        elif not self._timer.isActive():
-            self._timer.start(60)
+        if state in _BUSY_STATES:
+            # on_thinking, not _set_state: it also calls the familiar home from
+            # wherever it has wandered and holds the pose for a minimum time,
+            # so a fast translation still reads as one rather than flickering.
+            self.on_thinking()
+        elif state == OrbState.IDLE and self._state is FamiliarState.CAST:
+            self._set_state(FamiliarState.IDLE)
         self.update()
+
+    def set_failed(self, message: str = "") -> None:
+        """Something the user asked for did not work, and should look like it."""
+        self.state = OrbState.IDLE
+        self.on_error(message)
+
+    def speak(self, text: str, original: str = "") -> None:
+        """Put something in the familiar's speech bubble.
+
+        For what has no box of its own: what the orb heard, and what it says
+        back.  Box translations are painted in place, and a bubble repeating
+        every recognized line would cover the game.
+        """
+        self.state = OrbState.SPEAKING
+        self.on_result(text, original=original, with_bubble=True)
 
     def set_mic_active(self, active: bool) -> None:
         self.mic_active = active
         self.set_state(OrbState.LISTENING if active else OrbState.IDLE)
 
-    def _tick(self) -> None:
-        self._pulse = (self._pulse + 0.08) % 1.0
-        self.update()
-
     # ── input ────────────────────────────────────────────────────────
 
-    def mousePressEvent(self, event):
-        self._dragged = False
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        self._dragged = True
-        super().mouseMoveEvent(event)
-
     def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
-        # A click that moved the orb was a drag, and opening the panel on it
-        # makes the orb feel like it goes off in your hand.
-        if not self._dragged and event.button() == Qt.MouseButton.LeftButton:
+        """A click opens the panel; a drag just moves the familiar.
+
+        The base class discriminates the two and then opens the chat sidebar,
+        which under the new UI is a surface that no longer exists.
+        """
+        if event.button() == Qt.MouseButton.LeftButton and not self._dragging_user:
             self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        self.mic_active = not self.mic_active
-        self.set_mic_active(self.mic_active)
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mouseDoubleClickEvent(event)
+        self.set_mic_active(not self.mic_active)
         self.mic_toggled.emit(self.mic_active)
+        event.accept()
 
     # ── painting ─────────────────────────────────────────────────────
 
+    def _on_behaviour_tick(self):
+        super()._on_behaviour_tick()
+        if self.mic_active:
+            self._ring_phase += _RING_SPEED
+
     def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.mic_active:
+            return
+
+        # Drawn after the familiar so it reads as something the creature is
+        # wearing rather than part of it.
+        import math
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = _STATE_COLORS.get(self.state, _STATE_COLORS[OrbState.IDLE])
-        center = self.rect().center()
-        radius = ORB_SIZE / 2 - 6
-
-        gradient = QRadialGradient(float(center.x()), float(center.y()), radius)
-        gradient.setColorAt(0.0, color.lighter(140))
-        gradient.setColorAt(1.0, color.darker(160))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(gradient)
-        painter.drawEllipse(center, int(radius), int(radius))
-
-        if self.state == OrbState.LISTENING:
-            # A ring breathing outward: the orb is taking input from you.
-            alpha = int(200 * (1.0 - self._pulse))
-            ring = QColor(color)
-            ring.setAlpha(alpha)
-            painter.setPen(QPen(ring, 2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(center, int(radius + self._pulse * 6), int(radius + self._pulse * 6))
-        elif self.state in (OrbState.READING, OrbState.TRANSLATING):
-            # An arc going round: the orb is busy on your behalf.
-            painter.setPen(QPen(color.lighter(160), 3))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            span = int(self._pulse * 5760)
-            painter.drawArc(self.rect().adjusted(4, 4, -4, -4), span, 1440)
+        swell = (math.sin(self._ring_phase) + 1.0) / 2.0
+        ring = QColor(_LISTENING_RING)
+        ring.setAlpha(int(90 + 110 * swell))
+        painter.setPen(QPen(ring, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        radius = int(self.width() * 0.30 + swell * 5)
+        painter.drawEllipse(self.rect().center(), radius, radius)
+        painter.end()
 
 
 class OrbPanel(MageOverlayWindow):
@@ -177,6 +196,7 @@ class OrbPanel(MageOverlayWindow):
     message_sent = pyqtSignal(str)
     mic_toggled = pyqtSignal(bool)
     add_box_requested = pyqtSignal()
+    translate_once_requested = pyqtSignal()
     settings_requested = pyqtSignal()
     notes_requested = pyqtSignal()
 
@@ -199,13 +219,16 @@ class OrbPanel(MageOverlayWindow):
         self._title.setStyleSheet("font-weight: bold; color: #ddd;")
         header.addWidget(self._title, 1)
 
+        self._once_button = QPushButton(t("newui.orb.button.translate_once"))
+        self._once_button.setToolTip(t("newui.orb.tooltip.translate_once"))
+        self._once_button.clicked.connect(self.translate_once_requested)
         self._add_box_button = QPushButton(t("newui.orb.button.add_box"))
         self._add_box_button.clicked.connect(self.add_box_requested)
         self._notes_button = QPushButton(t("newui.orb.button.notes"))
         self._notes_button.clicked.connect(self.notes_requested)
         self._settings_button = QPushButton(t("newui.orb.button.settings"))
         self._settings_button.clicked.connect(self.settings_requested)
-        for button in (self._add_box_button, self._notes_button, self._settings_button):
+        for button in (self._once_button, self._add_box_button, self._notes_button, self._settings_button):
             header.addWidget(button)
         layout.addLayout(header)
 

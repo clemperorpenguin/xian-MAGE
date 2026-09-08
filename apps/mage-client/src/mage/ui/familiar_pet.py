@@ -137,6 +137,13 @@ class FamiliarSpecies(Enum):
 
     @classmethod
     def from_value(cls, value) -> "FamiliarSpecies":
+        # A member passed straight back in has to survive the round trip.
+        # str(FamiliarSpecies.OWL) is "FamiliarSpecies.OWL", not "owl", so
+        # without this the lookup below raises and every caller quietly gets a
+        # wizard — which is what __init__ did to the configured species on
+        # every start, because _species_from_settings hands back a member.
+        if isinstance(value, cls):
+            return value
         try:
             return cls(str(value))
         except ValueError:

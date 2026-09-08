@@ -25,10 +25,12 @@ import pytest
 
 from xian.translate import (
     BATCH_SEPARATOR,
+    MAX_TERMS_PER_REQUEST,
     TRANSLATION_MODEL,
     LineTranslator,
     TranslationModelUnavailable,
     build_translation_prompt,
+    relevant_terms,
 )
 
 
@@ -51,7 +53,9 @@ class FakeCompletions:
             if self.fail:
                 raise RuntimeError("backend refused")
             prompt = messages[-1]["content"]
-            body = prompt.split(":\n", 1)[1]
+            # Every Hy-MT2 template ends with the instruction, a blank line,
+            # then the source text.
+            body = prompt.rsplit("\n\n", 1)[-1]
             answer = self.answers.get(body, f"[{body}]")
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=answer))])
         finally:
@@ -87,16 +91,34 @@ def test_the_prompt_is_one_bare_user_turn():
     assert messages[0]["role"] == "user"
 
 
-def test_the_prompt_names_the_source_language():
-    """One short line is often too little to tell Chinese from Japanese."""
-    assert "from Chinese into English" in build_translation_prompt("门", "Chinese", "English")
+def test_the_prompt_is_hy_mt2_s_published_default_format():
+    """Not an improvised instruction: the model has a documented one."""
+    prompt = build_translation_prompt("门", "English")
+
+    assert prompt == (
+        "Translate the following text into English. Note that you should only output "
+        "the translated result without any additional explanation:\n\n门"
+    )
 
 
-def test_an_automatic_source_language_is_left_out():
-    prompt = build_translation_prompt("门", "auto", "English")
+def test_the_prompt_does_not_name_the_source_language():
+    """The published default format carries only the target."""
+    assert "Chinese" not in build_translation_prompt("门", "English")
 
-    assert "auto" not in prompt
-    assert "into English" in prompt
+
+def test_a_style_uses_the_style_template():
+    prompt = build_translation_prompt("门", "English", style="formal")
+
+    assert "must strictly conform to [formal]" in prompt
+    assert prompt.endswith("\n\n门")
+
+
+def test_a_batch_uses_the_delimiter_template():
+    """Losing one separator misaligns every line after it, so the model is
+    told about them explicitly."""
+    prompt = build_translation_prompt("a\nb", "English", delimited=True)
+
+    assert "retain the exact same number of delimiters" in prompt
 
 
 # ── the fan-out ──────────────────────────────────────────────────────
@@ -230,26 +252,61 @@ def test_an_undiscovered_server_is_not_treated_as_a_missing_model():
     assert completions.requests[0]["model"] == TRANSLATION_MODEL
 
 
-# ── glossary ─────────────────────────────────────────────────────────
+# ── terminology ──────────────────────────────────────────────────────
 
-def test_the_glossary_is_enforced_on_the_output():
-    """Hy-MT2 takes no system prompt, so term consistency cannot be asked for."""
-    processor, _ = fake_processor({"李云": "Li Yun the swordsman"})
-    translator = LineTranslator(processor=processor, glossary={"Li Yun": "Cloud Li"})
+def test_the_glossary_rides_along_as_reference_pairs():
+    """Hy-MT2 has a terminology format, so a glossary does reach it — through
+    the prompt, in the shape the wiki already stores it: source name to
+    canonical target name."""
+    prompt = build_translation_prompt("李云走进房间", "English", glossary={"李云": "Cloud Li"})
 
-    result = asyncio.run(translator.translate_lines(["李云"], "zh", "en"))
-
-    assert result == ["Cloud Li the swordsman"]
+    assert prompt.startswith("Reference the following translations:\n李云 translates to Cloud Li\n\n")
 
 
-def test_a_longer_glossary_term_wins_over_a_shorter_one():
-    processor, _ = fake_processor({"x": "Jade Sword Sect"})
-    translator = LineTranslator(
-        processor=processor,
-        glossary={"Jade Sword": "Bibao", "Jade Sword Sect": "Bibao Clan"},
-    )
+def test_only_the_terms_in_this_line_are_referenced():
+    """A wiki with five hundred entries would otherwise put all of them in
+    front of every request."""
+    glossary = {"李云": "Cloud Li", "碧刀门": "Jade Blade Sect"}
 
-    assert asyncio.run(translator.translate_lines(["x"], "zh", "en")) == ["Bibao Clan"]
+    assert relevant_terms("李云走进房间", glossary) == {"李云": "Cloud Li"}
+
+
+def test_the_reference_list_is_capped():
+    glossary = {f"名{index}": f"Name{index}" for index in range(40)}
+    text = "".join(glossary)
+
+    assert len(relevant_terms(text, glossary)) == MAX_TERMS_PER_REQUEST
+
+
+def test_longer_terms_are_referenced_first():
+    """A two-word term outranks a one-word term it contains."""
+    glossary = {"碧刀": "Jade Blade", "碧刀门": "Jade Blade Sect"}
+
+    assert list(relevant_terms("碧刀门弟子", glossary)) == ["碧刀门", "碧刀"]
+
+
+def test_no_relevant_terms_leaves_the_prompt_plain():
+    prompt = build_translation_prompt("门", "English", glossary={"李云": "Cloud Li"})
+
+    assert not prompt.startswith("Reference")
+
+
+def test_the_translator_passes_its_glossary_through(monkeypatch):
+    processor, completions = fake_processor()
+    translator = LineTranslator(processor=processor, glossary={"李云": "Cloud Li"})
+
+    asyncio.run(translator.translate_lines(["李云"], "Chinese", "English"))
+
+    assert "李云 translates to Cloud Li" in completions.requests[0]["messages"][0]["content"]
+
+
+def test_the_translator_passes_its_style_through():
+    processor, completions = fake_processor()
+    translator = LineTranslator(processor=processor, style="terse")
+
+    asyncio.run(translator.translate_lines(["门"], "Chinese", "English"))
+
+    assert "conform to [terse]" in completions.requests[0]["messages"][0]["content"]
 
 
 # ── the batched fallback ─────────────────────────────────────────────

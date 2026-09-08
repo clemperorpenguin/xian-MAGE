@@ -75,11 +75,13 @@ DEFAULT_LIVE_ENGINE = LIVE_ENGINE_GROUNDING
 # Detection model for the OCR engine: PP-OCRv5_mobile_det or _server_det.
 KEY_OCR_DETECTOR = "ocr_detector"
 
+# Which Hy-MT2 to translate text with.  Every text translation in the app uses
+# one of the two; the prompts are Hy-MT2's own published formats and nothing
+# else is offered, because running them against another model produces quality
+# problems that read as OCR problems.
+KEY_TRANSLATION_MODEL = "translation_model"
+
 # Newline-separated phrases stripped before the change gate sees a frame.
 # Each may be prefixed "regex:" or "exact:"; anything else is a substring.
 KEY_IGNORE_PHRASES = "ignore_phrases"
 
-# The new UI: translation boxes and the orb, instead of the tray, the command
-# OSD and the leader-key hotkeys.  Off by default; the classic shell is
-# untouched by it.
-KEY_NEW_UI = "new_ui"

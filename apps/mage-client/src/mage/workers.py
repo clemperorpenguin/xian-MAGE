@@ -723,11 +723,15 @@ class OrbVoiceWorker(QThread):
     status = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, processor, *, source_lang: str = "Chinese", target_lang: str = "English"):
+    def __init__(self, processor, *, source_lang: str = "Chinese", target_lang: str = "English",
+                 translator=None):
         super().__init__()
         self.processor = processor
         self.source_lang = source_lang
         self.target_lang = target_lang
+        # Injected so speech is translated by the same model, with the same
+        # style and the same cache, as everything read off the screen.
+        self._translator = translator
         self._running = True
 
     def stop(self):
@@ -749,9 +753,11 @@ class OrbVoiceWorker(QThread):
             if not asr_model:
                 raise ValueError("No transcription model available on the server.")
 
-            from xian.translate import LineTranslator
+            translator = self._translator
+            if translator is None:
+                from xian.translate import LineTranslator
 
-            translator = LineTranslator(processor=self.processor)
+                translator = LineTranslator(processor=self.processor)
             self.status.emit("newui.orb.status.listening")
 
             async with LemonadeClient(base_url=base_url.removesuffix("/v1")) as client:

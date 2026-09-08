@@ -156,37 +156,80 @@ def test_setting_the_mic_state_does_not_echo_back(panel):
     assert panel._mic_button.isChecked() is True
 
 
-# ── the orb itself ───────────────────────────────────────────────────
+# ── the orb itself, which is the familiar ────────────────────────────
 
-def test_the_orb_starts_idle_and_still(orb):
-    assert orb.state == OrbState.IDLE
-    assert not orb._timer.isActive()
+def test_the_orb_is_the_familiar(orb):
+    """They were two creatures for the same screen."""
+    from mage.ui.familiar_pet import FamiliarPet
+
+    assert isinstance(orb, FamiliarPet)
 
 
-def test_a_busy_orb_animates(orb):
+def test_the_orb_wears_the_species_from_settings(app):
+    from mage.settings_keys import KEY_FAMILIAR_TYPE
+    from mage.ui.familiar_pet import FamiliarSpecies
+    from mage.ui.new.orb import Orb
+
+    app.settings.setValue(KEY_FAMILIAR_TYPE, "owl")
+    orb = Orb(app=app)
+    try:
+        assert orb.species is FamiliarSpecies.OWL
+    finally:
+        orb.close()
+
+
+def test_working_holds_the_familiar_s_casting_pose(orb):
+    """The familiar already had a state for "a translation is running"; the
+    orb asks for that rather than inventing a second vocabulary."""
+    from mage.ui.familiar_pet import FamiliarState
+
     orb.set_state(OrbState.TRANSLATING)
 
-    assert orb._timer.isActive()
+    assert orb._state is FamiliarState.CAST
 
 
-def test_going_idle_stops_the_animation(orb):
+def test_going_idle_releases_the_casting_pose(orb):
+    from mage.ui.familiar_pet import FamiliarState
+
     orb.set_state(OrbState.TRANSLATING)
     orb.set_state(OrbState.IDLE)
 
-    assert not orb._timer.isActive()
+    assert orb._state is FamiliarState.IDLE
 
 
-def test_a_listening_orb_keeps_animating_when_told_it_is_idle(orb):
-    """The mic is still on; the orb has to keep saying so."""
+def test_a_failure_makes_the_familiar_sad(orb):
+    from mage.ui.familiar_pet import FamiliarState
+
+    orb.set_failed("no microphone")
+
+    assert orb._state is FamiliarState.SAD
+
+
+def test_speaking_puts_the_text_in_the_bubble(orb):
+    """For what has no box of its own — speech, and the orb's own answers."""
+    orb.speak("The door is locked.", original="这扇门被锁住了")
+
+    assert orb._bubble.isVisible()
+
+
+def test_the_mic_shows_on_the_orb(orb):
     orb.set_mic_active(True)
 
+    assert orb.mic_active is True
     assert orb.state == OrbState.LISTENING
-    assert orb._timer.isActive()
 
 
-def test_a_drag_does_not_open_the_panel(orb):
-    """A click that moved the orb was a drag, and opening on it makes the orb
-    feel like it goes off in your hand."""
+def test_turning_the_mic_off_returns_the_orb_to_idle(orb):
+    orb.set_mic_active(True)
+    orb.set_mic_active(False)
+
+    assert orb.mic_active is False
+    assert orb.state == OrbState.IDLE
+
+
+def test_a_click_opens_the_panel_and_a_drag_does_not(orb):
+    """The familiar already tells the two apart; the orb only changes what a
+    click means — the chat sidebar it used to open is gone."""
     from PyQt6.QtCore import QPointF, Qt
     from PyQt6.QtGui import QMouseEvent
 
@@ -199,13 +242,40 @@ def test_a_drag_does_not_open_the_panel(orb):
             Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
         )
 
-    orb.mousePressEvent(event(QMouseEvent.Type.MouseButtonPress))
-    orb.mouseMoveEvent(event(QMouseEvent.Type.MouseMove))
+    orb._dragging_user = True
     orb.mouseReleaseEvent(event(QMouseEvent.Type.MouseButtonRelease))
-
     assert opened == []
 
-    orb.mousePressEvent(event(QMouseEvent.Type.MouseButtonPress))
+    orb._dragging_user = False
     orb.mouseReleaseEvent(event(QMouseEvent.Type.MouseButtonRelease))
-
     assert opened == [True]
+
+
+def test_a_double_click_toggles_the_microphone(orb):
+    from PyQt6.QtCore import QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
+
+    toggles = []
+    orb.mic_toggled.connect(toggles.append)
+
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    )
+    orb.mouseDoubleClickEvent(event)
+    orb.mouseDoubleClickEvent(event)
+
+    assert toggles == [True, False]
+
+
+def test_a_species_member_survives_being_resolved_again():
+    """`str()` on an enum member is "FamiliarSpecies.OWL", not "owl".
+
+    _species_from_settings hands __init__ a member, so without this every
+    start resolved to a wizard whatever the user had chosen.
+    """
+    from mage.ui.familiar_pet import FamiliarSpecies
+
+    assert FamiliarSpecies.from_value(FamiliarSpecies.OWL) is FamiliarSpecies.OWL
+    assert FamiliarSpecies.from_value("owl") is FamiliarSpecies.OWL
+    assert FamiliarSpecies.from_value("nonsense") is FamiliarSpecies.WIZARD
