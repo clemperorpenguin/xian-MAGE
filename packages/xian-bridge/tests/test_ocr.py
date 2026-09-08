@@ -20,6 +20,33 @@ needs_engine = pytest.mark.skipif(
 )
 
 
+def _weights_cached() -> bool:
+    """Whether the engine can actually read, not merely import.
+
+    The PP-OCRv5 weights are a separate download into ``~/.cache/xian-vl/ocr``,
+    and there is no default base URL to fetch them from. A machine with the
+    extra installed but an empty cache — CI, every time — can only get a 503
+    out of the detection endpoint, which says nothing about the route.
+    """
+    if not ocr.IMPLEMENTED:
+        return False
+    try:
+        from xian.ocr.engine import DEFAULT_DETECTOR
+        from xian.ocr.models import verify_model
+        from xian.ocr.scripts import SCRIPTS, recognizer_script_for
+
+        return verify_model(DEFAULT_DETECTOR) and verify_model(
+            SCRIPTS[recognizer_script_for(None)]
+        )
+    except Exception:
+        return False
+
+
+needs_weights = pytest.mark.skipif(
+    not _weights_cached(), reason="PP-OCRv5 weights are not in the local cache"
+)
+
+
 @pytest.mark.skipif(ocr.IMPLEMENTED, reason="engine is installed")
 def test_ocr_reports_501_without_an_engine():
     """No engine must mean a refusal, never a placeholder block to translate."""
@@ -40,7 +67,7 @@ def test_ocr_validates_image_format():
     assert resp.status_code == 400
 
 
-@needs_engine
+@needs_weights
 def test_ocr_returns_block_structure():
     """A valid image should return blocks with quads."""
     # Generate a 10x10 white PNG
