@@ -204,6 +204,17 @@ class SettleGate:
         """The last text this gate released."""
         return self._accepted
 
+    @property
+    def settling(self) -> bool:
+        """True while text is waiting out the settle window.
+
+        A caller with a cheaper gate in front of this one has to know: the
+        settle window can only close if the same text is looked at *again*, so
+        a pixel-level gate that skips unchanged frames would starve this one
+        and nothing would ever be translated.
+        """
+        return self._pending is not None
+
     def reset(self) -> None:
         """Forget everything — the escape hatch behind a manual retry."""
         self._accepted = None

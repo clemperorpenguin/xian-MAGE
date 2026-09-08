@@ -171,7 +171,9 @@ class NewShell(Shell):
 
     def _on_chat_result(self, response: str) -> None:
         self.panel.add_message("mage", response)
-        self.orb.set_state(self._OrbState.IDLE)
+        # In the panel and in the bubble: the panel is the record, the bubble
+        # is how the familiar answers you.
+        self.orb.speak(response)
 
     # ── voice ────────────────────────────────────────────────────────
 
@@ -214,10 +216,13 @@ class NewShell(Shell):
 
     def _on_utterance(self, transcript: str, translated: str) -> None:
         self.panel.add_translation(transcript, translated, kind="voice")
+        # Speech has no box to be painted into, so the bubble is where it goes.
+        self.orb.speak(translated, original=transcript)
 
     def _on_voice_error(self, message: str) -> None:
         logger.error("orb voice error: %s", message)
         self.panel.add_message("mage", message)
+        self.orb.set_failed(message)
         self.set_microphone(False)
 
     # ── teardown ─────────────────────────────────────────────────────

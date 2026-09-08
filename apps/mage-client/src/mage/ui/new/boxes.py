@@ -385,20 +385,38 @@ class BoxManager(QObject):
             shell.on_translation(original, translated)
 
     def _on_regions(self, overlay, box, regions, served_rect, scale) -> None:
-        from mage.ui.inpaint_overlay import InpaintRegion
+        from mage.ui.inpaint_overlay import InpaintRegion, contrasting_text_color
 
         box.set_state(BoxState.SETTLED if regions else BoxState.READING)
-        overlay.bind_to_rect(served_rect)
-        overlay.set_regions(
-            [
+
+        # Boxes arrive from the worker in capture pixels as (left, top, right,
+        # bottom); Qt paints in logical coordinates and wants x/y/w/h.  The
+        # ratio is measured from the frame that was actually captured, because
+        # the display's devicePixelRatio is wrong for the PyQt capture path,
+        # which already composites in logical pixels.
+        ratio = scale if scale and scale > 0 else 1.0
+        painted = []
+        for region in regions:
+            left, top, right, bottom = region.box
+            fill = QColor(*region.fill)
+            painted.append(
                 InpaintRegion(
-                    box=tuple(int(value / scale) for value in region.box),
+                    rect=QRect(
+                        int(left / ratio),
+                        int(top / ratio),
+                        int((right - left) / ratio),
+                        int((bottom - top) / ratio),
+                    ),
                     text=region.translated,
-                    fill=QColor(*region.fill),
+                    fill=fill,
+                    text_color=contrasting_text_color(fill),
                 )
-                for region in regions
-            ]
-        )
+            )
+
+        overlay.bind_to_rect(served_rect)
+        overlay.set_regions(painted)
+        overlay.show()
+        overlay.promote()
 
     def _stop_box(self, box: TranslationBox) -> None:
         worker = self._workers.pop(box.box_id, None)

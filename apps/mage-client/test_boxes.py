@@ -207,3 +207,84 @@ def test_a_box_persists_its_geometry_under_its_own_id(manager):
 
     assert isinstance(box, TranslationBox)
     assert box.window_id == box.box_id
+
+
+# ── painting ─────────────────────────────────────────────────────────
+
+class FakeOverlay:
+    """Captures what would have been painted."""
+
+    def __init__(self):
+        self.regions = None
+        self.bound = None
+
+    def bind_to_rect(self, rect):
+        self.bound = rect
+
+    def set_regions(self, regions):
+        self.regions = regions
+
+    def show(self):
+        pass
+
+    def promote(self):
+        pass
+
+
+class FakeRegion:
+    """What the worker emits: capture pixels, (left, top, right, bottom)."""
+
+    def __init__(self, box, translated="translated", fill=(20, 30, 40)):
+        self.box = box
+        self.original = "original"
+        self.translated = translated
+        self.fill = fill
+
+
+def test_translated_regions_reach_the_overlay(manager):
+    """The regression that made the feature look like it did nothing.
+
+    The overlay's region type is a dataclass of (rect, text, fill,
+    text_color); building it with a `box=` tuple raised TypeError on every
+    publish, inside a Qt signal handler, so the overlay simply stayed empty
+    and nothing said why.
+    """
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+    overlay = FakeOverlay()
+
+    manager._on_regions(overlay, box, [FakeRegion((10, 20, 110, 60))], QRect(0, 0, 400, 300), 1.0)
+
+    assert overlay.regions is not None
+    assert len(overlay.regions) == 1
+    assert overlay.regions[0].text == "translated"
+
+
+def test_capture_pixels_are_converted_to_logical_rects(manager):
+    """The worker measures the ratio from the frame it captured; boxes arrive
+    as corners and Qt paints x/y/w/h."""
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+    overlay = FakeOverlay()
+
+    manager._on_regions(overlay, box, [FakeRegion((20, 40, 220, 100))], QRect(0, 0, 400, 300), 2.0)
+
+    assert overlay.regions[0].rect == QRect(10, 20, 100, 30)
+
+
+def test_the_text_colour_contrasts_with_the_sampled_fill(manager):
+    """A translation painted in the background colour is not a translation."""
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+    overlay = FakeOverlay()
+
+    manager._on_regions(overlay, box, [FakeRegion((0, 0, 100, 30), fill=(250, 250, 250))], QRect(0, 0, 400, 300), 1.0)
+
+    painted = overlay.regions[0]
+    assert painted.text_color.lightness() < painted.fill.lightness()
+
+
+def test_an_empty_result_clears_the_overlay(manager):
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+    overlay = FakeOverlay()
+
+    manager._on_regions(overlay, box, [], QRect(0, 0, 400, 300), 1.0)
+
+    assert overlay.regions == []

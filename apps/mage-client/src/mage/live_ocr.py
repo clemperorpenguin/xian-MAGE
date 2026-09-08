@@ -183,7 +183,16 @@ class LiveOcrWorker(LiveWorkerBase):
             return None
 
         texts = [block.text for block in blocks]
-        if not self._ensure_gate().should_translate(texts):
+        gate = self._ensure_gate()
+        if not gate.should_translate(texts):
+            if gate.settling:
+                # The settle window only closes if the same text is looked at
+                # again, and the perceptual-hash gate upstream skips frames
+                # whose pixels have not moved -- which is every frame of a
+                # static dialogue box.  Left alone, the two gates deadlock and
+                # nothing is ever translated.  Clearing the hash lets the next
+                # tick back through to finish settling.
+                self._clean_hash = None
             return None
 
         translator = self._ensure_translator()
