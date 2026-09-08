@@ -56,15 +56,31 @@ __all__ = [
     "DEFAULT_CONCURRENCY",
     "LineTranslator",
     "TRANSLATION_MODEL",
+    "TRANSLATION_MODELS",
     "TranslationModelUnavailable",
     "build_translation_prompt",
+    "is_supported_translation_model",
+    "relevant_terms",
 ]
 
-#: The pinned line translator.  A specific model rather than a routed one: the
-#: prompt shape, the absence of a system turn and the per-line fan-out are all
-#: tuned to this model's behaviour, and silently running them against whatever
-#: the router picked would produce quality problems that look like OCR problems.
+#: The line translator, pinned to Hy-MT2.  A specific model rather than a
+#: routed one: the prompt shapes above are Hy-MT2's own published formats, the
+#: absence of a system turn is a property of machine-translation models, and
+#: silently running any of it against whatever the router happened to pick
+#: produces quality problems that read as OCR problems.
 TRANSLATION_MODEL = "Hy-MT2-1.8B-GGUF-Q4_K_M"
+
+#: The two sizes, fastest first.  Every text translation in the app uses one of
+#: these; nothing else is offered, because the pipeline is built around them.
+TRANSLATION_MODELS = (
+    "Hy-MT2-1.8B-GGUF-Q4_K_M",
+    "Hy-MT2-7B-GGUF-Q4_K_M",
+)
+
+
+def is_supported_translation_model(model_id: str | None) -> bool:
+    """True for a model this pipeline is willing to translate with."""
+    return model_id in TRANSLATION_MODELS
 
 #: In-flight requests.  Local serving may or may not parallelise; see
 #: ``batched`` below for what happens when it does not.
@@ -190,6 +206,14 @@ class LineTranslator:
         """The model id to send to, or an error that says what to install."""
         if self._resolved is not None:
             return self._resolved
+
+        if not is_supported_translation_model(self.model):
+            # A stale setting, or a caller passing the chat model through.
+            # Falling back quietly is how the whole pipeline ends up running
+            # on a model none of its prompts were written for.
+            logger.warning("%s is not a supported translation model; using %s",
+                           self.model, TRANSLATION_MODEL)
+            self.model = TRANSLATION_MODEL
 
         router = getattr(self.processor, "router", None)
         installed = list(getattr(router, "downloaded_model_ids", []) or []) if router else []

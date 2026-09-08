@@ -348,13 +348,24 @@ class BoxManager(QObject):
         worker.start()
 
     def _build_worker(self, box: TranslationBox):
+        return self._build_worker_for_rect(box.geometry(), box=box)
+
+    def _build_worker_for_rect(self, rect: QRect, *, box: "TranslationBox | None" = None, settle_now: bool = False):
+        """A reader and an overlay for one rectangle, box or not.
+
+        ``settle_now`` drops the settle window, which exists to stop a
+        typewriter reveal being translated mid-sentence.  A one-off
+        translation the user just asked for should not wait for a second look
+        at text they can already see.
+        """
         from mage.live_ocr import LiveOcrWorker
         from mage.settings_keys import KEY_IGNORE_PHRASES, KEY_LIVE_INTERVAL_MS, KEY_SOURCE_LANG, KEY_TARGET_LANG
+        from mage.translation import make_translator
         from mage.ui.inpaint_overlay import InpaintOverlay
         from shared_types import constants
         from xian.filters import TextFilter
+        from xian.text_gate import SettleGate
 
-        rect = box.geometry()
         overlay = InpaintOverlay()
         overlay.bind_to_rect(rect)
         overlay.show()
@@ -364,17 +375,20 @@ class BoxManager(QObject):
             self.app.processor,
             rect,
             engine=self.engine(),
+            translator=make_translator(settings, self.app.processor),
             text_filter=TextFilter.from_settings(settings.value(KEY_IGNORE_PHRASES, "")),
             exclude_regions=[r for r in self.exclude_regions() if r != rect],
             source_lang=settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG),
             target_lang=settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG),
             interval_ms=int(settings.value(KEY_LIVE_INTERVAL_MS, constants.DEFAULT_LIVE_INTERVAL_MS)),
             session_recorder=self._record,
+            gate=SettleGate(settle_seconds=0.0) if settle_now else None,
         )
         worker.regions_ready.connect(
             lambda regions, served, scale, ov=overlay, b=box: self._on_regions(ov, b, regions, served, scale)
         )
-        worker.error.connect(lambda message, b=box: b.set_state(BoxState.FAILED))
+        if box is not None:
+            worker.error.connect(lambda message, b=box: b.set_state(BoxState.FAILED))
         return worker, overlay
 
     def _record(self, original: str, translated: str) -> None:
@@ -387,7 +401,8 @@ class BoxManager(QObject):
     def _on_regions(self, overlay, box, regions, served_rect, scale) -> None:
         from mage.ui.inpaint_overlay import InpaintRegion, contrasting_text_color
 
-        box.set_state(BoxState.SETTLED if regions else BoxState.READING)
+        if box is not None:
+            box.set_state(BoxState.SETTLED if regions else BoxState.READING)
 
         # Boxes arrive from the worker in capture pixels as (left, top, right,
         # bottom); Qt paints in logical coordinates and wants x/y/w/h.  The
@@ -463,6 +478,46 @@ class BoxManager(QObject):
             if not worker.wait(2000):
                 worker.finished.connect(worker.deleteLater)
         box.set_state(BoxState.SETTLED)
+
+    # ── one-off ──────────────────────────────────────────────────────
+
+    def translate_once(self, rect: QRect, *, hold_ms: int = 12000) -> None:
+        """Read and translate a rectangle once, then let it fade.
+
+        No box is left behind.  For the case a persistent box is too much
+        ceremony for — a sign, an item tooltip, one line of a menu you are
+        never coming back to.
+        """
+        key = f"once_{id(rect)}_{len(self._workers)}"
+        try:
+            worker, overlay = self._build_worker_for_rect(rect, settle_now=True)
+        except Exception as exc:
+            logger.error("one-off translation could not start: %s", exc)
+            return
+
+        self._workers[key] = worker
+        self._overlays[key] = overlay
+
+        def finish(*_args):
+            existing = self._workers.pop(key, None)
+            if existing is not None:
+                existing.stop()
+                existing.requestInterruption()
+                if not existing.wait(2000):
+                    existing.finished.connect(existing.deleteLater)
+            # The overlay outlives its reader so the translation stays on
+            # screen long enough to be read, then goes on its own.
+            QTimer.singleShot(hold_ms, lambda: self._dismiss_once(key))
+
+        worker.regions_ready.connect(lambda *_a: QTimer.singleShot(0, finish))
+        worker.error.connect(lambda _m: QTimer.singleShot(0, finish))
+        worker.start()
+
+    def _dismiss_once(self, key: str) -> None:
+        overlay = self._overlays.pop(key, None)
+        if overlay is not None:
+            overlay.close()
+            overlay.deleteLater()
 
     def start_all(self) -> None:
         """Bring every live box up, staggered so they do not all read at once."""

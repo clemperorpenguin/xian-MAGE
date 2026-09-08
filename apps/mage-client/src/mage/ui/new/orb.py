@@ -196,6 +196,7 @@ class OrbPanel(MageOverlayWindow):
     message_sent = pyqtSignal(str)
     mic_toggled = pyqtSignal(bool)
     add_box_requested = pyqtSignal()
+    translate_once_requested = pyqtSignal()
     settings_requested = pyqtSignal()
     notes_requested = pyqtSignal()
 
@@ -218,13 +219,16 @@ class OrbPanel(MageOverlayWindow):
         self._title.setStyleSheet("font-weight: bold; color: #ddd;")
         header.addWidget(self._title, 1)
 
+        self._once_button = QPushButton(t("newui.orb.button.translate_once"))
+        self._once_button.setToolTip(t("newui.orb.tooltip.translate_once"))
+        self._once_button.clicked.connect(self.translate_once_requested)
         self._add_box_button = QPushButton(t("newui.orb.button.add_box"))
         self._add_box_button.clicked.connect(self.add_box_requested)
         self._notes_button = QPushButton(t("newui.orb.button.notes"))
         self._notes_button.clicked.connect(self.notes_requested)
         self._settings_button = QPushButton(t("newui.orb.button.settings"))
         self._settings_button.clicked.connect(self.settings_requested)
-        for button in (self._add_box_button, self._notes_button, self._settings_button):
+        for button in (self._once_button, self._add_box_button, self._notes_button, self._settings_button):
             header.addWidget(button)
         layout.addLayout(header)
 

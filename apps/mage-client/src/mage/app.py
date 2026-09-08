@@ -55,7 +55,7 @@ from mage.ui.chat_sidebar import ChatSidebar
 from mage.ui.how_to_say import HowToSayDialog
 from mage.ui.raid_window import RaidWindow
 from mage.ui.result_bubble import ResultBubble
-from mage.ui.familiar_pet import FamiliarPet, FamiliarSpecies
+from mage.ui.familiar_pet import FamiliarSpecies
 from mage.ui.overlay_base import MageOverlayWindow
 from mage.capture.hotkeys import create_hotkey_listener
 from mage.telemetry import get_recorder, TelemetrySampler
@@ -64,7 +64,6 @@ from mage.capture.screen import ScreenCapture
 from mage.capture.audio import play_audio_async, SerialAudioPlayer
 from xian.dictionary import LocalDictionary
 from xian.lemonade_url import normalize_lemonade_api_base_url, should_warn_http_to_non_loopback
-from mage.ui.command_osd import CommandOSD
 from mage.ui.notes_sidebar import NotesSidebar
 from shared_types import constants
 from shared_types.enums import SourceLanguage, TargetLanguage, TranslationMode, TranslationStyle
@@ -77,7 +76,7 @@ from mage.settings_keys import (
     KEY_FAMILIAR_CUSTOM_RECIPE, KEY_MEMORY_ENABLED, KEY_MEMORY_RETENTION_DAYS,
     KEY_BACKEND_PREFERENCE, KEY_NPU_POWER_MODE, KEY_LIVE_INTERVAL_MS,
     KEY_COLLECTION_TIER, KEY_EXPERIMENTAL_LIVE, KEY_LIVE_ENGINE,
-    KEY_OCR_DETECTOR, KEY_IGNORE_PHRASES, KEY_NEW_UI,
+    KEY_OCR_DETECTOR, KEY_IGNORE_PHRASES, KEY_TRANSLATION_MODEL,
     DEFAULT_LIVE_ENGINE, LIVE_ENGINE_GROUNDING, LIVE_ENGINE_OCR, is_true,
 )
 from mage.utils.window_binder import WindowBinder
@@ -270,6 +269,22 @@ class SettingsDialog(QDialog):
         self.mode_combo.setCurrentText(settings.value(KEY_MODE, constants.DEFAULT_MODE))
         trans_layout.addRow(t("settings.label.mode"), self.mode_combo)
 
+        # Text translation is Hy-MT2 or nothing: the prompts are its own
+        # published instruction formats and the pipeline is shaped around it,
+        # so the choice here is which size, not which model.
+        from xian.translate import TRANSLATION_MODEL, TRANSLATION_MODELS
+
+        self.translation_model_combo = QComboBox()
+        for model_id in TRANSLATION_MODELS:
+            self.translation_model_combo.addItem(t(f"settings.option.translation_model.{model_id}"), model_id)
+        tm_idx = self.translation_model_combo.findData(
+            settings.value(KEY_TRANSLATION_MODEL, TRANSLATION_MODEL)
+        )
+        if tm_idx >= 0:
+            self.translation_model_combo.setCurrentIndex(tm_idx)
+        self.translation_model_combo.setToolTip(t("settings.tooltip.translation_model"))
+        trans_layout.addRow(t("settings.label.translation_model"), self.translation_model_combo)
+
         style_layout = QVBoxLayout()
         self.style_checkboxes = {}
         saved_styles = _parse_styles(settings)
@@ -384,11 +399,6 @@ class SettingsDialog(QDialog):
 
         self.live_engine_combo.currentIndexChanged.connect(_sync_ocr_rows)
         _sync_ocr_rows()
-
-        self.new_ui_cb = QCheckBox(t("settings.checkbox.new_ui"))
-        self.new_ui_cb.setToolTip(t("settings.tooltip.new_ui"))
-        self.new_ui_cb.setChecked(is_true(settings.value(KEY_NEW_UI, "false")))
-        features_layout.addRow(self.new_ui_cb)
 
         # The interval only means anything while the live overlay is running.
         self.live_interval_spin.setEnabled(self.experimental_live_cb.isChecked())
@@ -611,7 +621,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue(KEY_LIVE_ENGINE, self.live_engine_combo.currentData())
         self.settings.setValue(KEY_OCR_DETECTOR, self.ocr_detector_combo.currentData())
         self.settings.setValue(KEY_IGNORE_PHRASES, self.ignore_phrases_edit.toPlainText())
-        self.settings.setValue(KEY_NEW_UI, "true" if self.new_ui_cb.isChecked() else "false")
+        self.settings.setValue(KEY_TRANSLATION_MODEL, self.translation_model_combo.currentData())
         self.accept()
 
     def _on_edit_layout(self):
@@ -694,18 +704,11 @@ class XianApp(QWidget):
         if hasattr(self.hotkey_listener, "set_overlay_toggle_key"):
             self.hotkey_listener.set_overlay_toggle_key(initial_toggle)
 
-        self.hotkey_listener.trigger_lens.connect(self.show_lens)
-        self.hotkey_listener.trigger_chat.connect(self.toggle_chat)
-        self.hotkey_listener.trigger_settings.connect(self._open_settings)
-
-        self.hotkey_listener.trigger_cinematic_mode.connect(self.toggle_cinematic_mode)
-        self.hotkey_listener.trigger_how_to_say.connect(self.show_how_to_say)
-        self.hotkey_listener.trigger_raid_mode.connect(self.start_raid_mode)
-        self.hotkey_listener.trigger_notes.connect(self.toggle_notes)
+        # The leader key and its letter menu are gone with the old UI; every
+        # command is a click on the orb now.  One gesture survives, because a
+        # fullscreen game holding the pointer leaves nothing to click:
+        # double-tapping the overlay-toggle key hides every overlay.
         self.hotkey_listener.cinematic_capture.connect(self._on_cinematic_trigger)
-        self.hotkey_listener.command_mode_started.connect(self._on_command_mode_started)
-        if hasattr(self.hotkey_listener, "command_mode_cancelled"):
-            self.hotkey_listener.command_mode_cancelled.connect(self.hide_osd)
         if hasattr(self.hotkey_listener, "toggle_overlays"):
             self.hotkey_listener.toggle_overlays.connect(self.toggle_all_overlays)
 
@@ -728,22 +731,6 @@ class XianApp(QWidget):
         # the whole session can be saved as a single note.
         self._dialogue_session: list[tuple[str, str]] = []
 
-        self.osd = CommandOSD(self)
-        self.osd.initialize_settings(
-            source=self.settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG),
-            target=self.settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG),
-            model=self.settings.value(KEY_API_MODEL, constants.DEFAULT_MODEL)
-        )
-        dev_val = self.settings.value("developer_options", "false")
-        self.osd.set_developer_options_visible(is_true(dev_val))
-        self.osd.setting_changed.connect(self._on_osd_setting_changed)
-        self.osd.command_triggered.connect(self._on_osd_command)
-        self.osd.osd_hidden.connect(self._on_osd_hidden)
-        
-        self.osd_timer = QTimer(self)
-        self.osd_timer.setSingleShot(True)
-        self.osd_timer.timeout.connect(self.hide_osd)
-
         self._init_session_memory()
 
         # Live (inpainted) translation state.
@@ -755,7 +742,6 @@ class XianApp(QWidget):
 
         self.how_to_say_dialog = HowToSayDialog(self)
         self.how_to_say_dialog.translation_requested.connect(self._on_how_to_say_submit)
-        self.how_to_say_dialog.dialog_hidden.connect(self._on_osd_hidden)
 
         self._lens: LensOverlayWindow | None = None
         self._workers: list = []
@@ -787,7 +773,6 @@ class XianApp(QWidget):
         self.apply_overlay_opacity()
         self.apply_overlay_text_size()
         self._setup_telemetry()
-        self._setup_familiar()
 
         # Last, so the new shell can turn off the parts of the classic one it
         # replaces rather than racing them into existence.
@@ -795,56 +780,36 @@ class XianApp(QWidget):
 
         self._shell = install_shell(self)
 
-    def _setup_familiar(self):
-        """Create the desktop familiar companion if Familiar Mode is enabled."""
-        self.familiar = None
-        if is_true(self.settings.value(KEY_NEW_UI, "false")):
-            # The orb is the creature under the new UI, and two of them on
-            # screen at once is one too many.
-            return
-        fam_val = self.settings.value(KEY_FAMILIAR_ENABLED, "false")
-        if is_true(fam_val):
-            self._create_familiar()
+    @property
+    def familiar(self):
+        """The familiar is the orb.
+
+        They were two creatures for the same screen, so the orb *is* a
+        FamiliarPet now and everything that used to drive the familiar --
+        casting while a translation runs, the speech bubble, Conjure, the
+        species picker -- drives it through here unchanged.
+        """
+        shell = getattr(self, "_shell", None)
+        return getattr(shell, "orb", None)
 
     def _developer_mode(self) -> bool:
         val = self.settings.value("developer_options", "false")
         return is_true(val)
 
-    def _create_familiar(self):
-        if getattr(self, "familiar", None):
-            return
-        # Familiar Mode is gated behind Developer Mode while its art is in
-        # progress. This is the single chokepoint for every creation path
-        # (startup, tray toggle, settings save), so the gate lives here.
-        if not self._developer_mode():
-            logger.info("Familiar Mode is gated behind Developer Mode; skipping creation")
-            return
-        self.familiar = FamiliarPet(app=self, parent=self)
-        self.familiar.show()
-        if hasattr(self, "familiar_action"):
-            self.familiar_action.setChecked(True)
-        logger.info("Familiar Mode enabled")
-
-    def _destroy_familiar(self):
-        familiar = getattr(self, "familiar", None)
-        if familiar is None:
-            return
-        familiar.shutdown()
-        familiar.close()
-        familiar.deleteLater()
-        self.familiar = None
-        if hasattr(self, "familiar_action"):
-            self.familiar_action.setChecked(False)
-        logger.info("Familiar Mode disabled")
-
     def toggle_familiar(self):
-        """Tray/context-menu toggle that also persists the preference."""
-        if getattr(self, "familiar", None):
-            self.settings.setValue(KEY_FAMILIAR_ENABLED, "false")
-            self._destroy_familiar()
-        else:
-            self.settings.setValue(KEY_FAMILIAR_ENABLED, "true")
-            self._create_familiar()
+        """Show or hide the orb.
+
+        Hiding it leaves the tray as the only way back, which is exactly why
+        the tray survived the old UI.
+        """
+        orb = self.familiar
+        if orb is None:
+            return
+        visible = not orb.isVisible()
+        orb.setVisible(visible)
+        self.settings.setValue(KEY_FAMILIAR_ENABLED, "true" if visible else "false")
+        if hasattr(self, "familiar_action"):
+            self.familiar_action.setChecked(visible)
 
     def conjure_familiar(self):
         """Open the Conjure modal; on accept, apply + persist the new recipe.
@@ -1322,67 +1287,10 @@ class XianApp(QWidget):
             
         msg.exec()
 
-    def hide_osd(self):
-        self.osd.hide()
-        self.osd_timer.stop()
-
-    def _on_osd_hidden(self):
-        if hasattr(self.hotkey_listener, "cancel_command_mode"):
-            self.hotkey_listener.cancel_command_mode()
-
-    def _on_command_mode_started(self):
-        dev_val = self.settings.value("developer_options", "false")
-        self.osd.set_developer_options_visible(is_true(dev_val))
-        self.osd.show_centered()
-        if self.target_binder:
-            self._apply_transient_parent(self.osd)
-            geom = self.target_binder.get_geometry()
-            if geom:
-                tx, ty, tw, th = geom
-                self.osd.move(
-                    tx + (tw - self.osd.width()) // 2,
-                    ty + (th - self.osd.height()) // 2
-                )
-        self.osd_timer.start(15000)
-        
-    def _on_osd_setting_changed(self, key: str, value: str):
-        """Handle quick-settings updates from the OSD."""
-        logger.info("OSD updated %s to %s", key, value)
-        self.settings.setValue(key, value)
-        if key == KEY_API_MODEL:
-            # No engine reconfigure: the model travels per-request, and the
-            # server URL has not changed.
-            self.processor.config.model_name = value
-            self._run_health_check()
-            self._safe_stop_worker("_prewarm_worker")
-            self._start_prewarm()
-
-    def _on_osd_command(self, key: str):
-        """Handle option buttons clicked in the OSD."""
-        logger.info("OSD command triggered: %s", key)
-        self.hide_osd()
-        
-        if key == "C":
-            self.show_lens()
-        elif key == "A":
-            self.toggle_chat()
-
-        elif key == "M":
-            self.toggle_cinematic_mode()
-        elif key == "T":
-            self.show_how_to_say()
-        elif key == "R":
-            self.start_raid_mode()
-        elif key == "N":
-            self.toggle_notes()
-        elif key == "S":
-            self._open_settings()
-
     def show_lens(self):
         """Capture the screen and open the Lens overlay."""
         if not self._ensure_model_ready():
             return
-        self.hide_osd()
         logger.info("Opening Lens overlay")
         # Close any existing lens
         if self._lens is not None:
@@ -1993,7 +1901,6 @@ class XianApp(QWidget):
     # Chat
     def toggle_chat(self):
         """Toggle the chat sidebar visibility."""
-        self.hide_osd()
         if self.chat_sidebar.isVisible():
             self.chat_sidebar.hide()
         else:
@@ -2014,7 +1921,6 @@ class XianApp(QWidget):
     # Notes
     def toggle_notes(self):
         """Toggle the notes sidebar visibility."""
-        self.hide_osd()
         if self.notes_sidebar.isVisible():
             self.notes_sidebar.hide()
         else:
@@ -2034,7 +1940,6 @@ class XianApp(QWidget):
 
     # How to say
     def show_how_to_say(self):
-        self.hide_osd()
         if not self._ensure_model_ready():
             return
         target_lang = self.settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG)
@@ -2148,7 +2053,6 @@ class XianApp(QWidget):
 
     # Cinematic Mode
     def toggle_cinematic_mode(self):
-        self.hide_osd()
         dev_val = self.settings.value("developer_options", "false")
         if not (is_true(dev_val)):
             logger.info("Cinematic mode bypassed: developer options disabled")
@@ -2251,7 +2155,6 @@ class XianApp(QWidget):
 
     # Raid Mode
     def start_raid_mode(self):
-        self.hide_osd()
         dev_val = self.settings.value("developer_options", "false")
         if not (is_true(dev_val)):
             logger.info("Raid mode bypassed: developer options disabled")
@@ -2389,7 +2292,6 @@ class XianApp(QWidget):
         if available:
             logger.info("Lemonade server connected. Models: %s", models)
             self._available_models = models
-            self.osd.update_models(models)
             
             # Update the central router
             self.processor.router.update_with_models(raw_models or [])
@@ -2460,7 +2362,6 @@ class XianApp(QWidget):
 
     # Settings
     def _open_settings(self):
-        self.hide_osd()
         dlg = SettingsDialog(self.settings, self._available_models, app=self)
         
         def _handle_layout_edit():
@@ -2512,32 +2413,19 @@ class XianApp(QWidget):
                 self.hotkey_listener.set_overlay_toggle_key(new_toggle)
                 
             self._setup_window_binder()
-            dev_val = self.settings.value("developer_options", "false")
-            self.osd.set_developer_options_visible(is_true(dev_val))
-            
+
             # Restore geometries according to layout preset
-            self.osd.restore_geometry()
             self.chat_sidebar.restore_geometry()
             self.how_to_say_dialog.restore_geometry()
             if hasattr(self, "raid_window") and self.raid_window:
                 self.raid_window.restore_geometry()
 
-            # Sync the desktop familiar. It's gated behind Developer Mode while
-            # the art is in progress, so it only runs when BOTH Developer Mode
-            # and the familiar toggle are on. Toggling Developer Mode off tears
-            # down a running familiar even if its own checkbox stayed on.
-            dev_on = self._developer_mode()
-            self.familiar_action.setVisible(dev_on)
-            fam_enabled = self.settings.value(KEY_FAMILIAR_ENABLED, "false")
-            fam_enabled = is_true(fam_enabled)
-            want_familiar = dev_on and fam_enabled
-            if want_familiar and not getattr(self, "familiar", None):
-                self._create_familiar()
-            elif not want_familiar and getattr(self, "familiar", None):
-                self._destroy_familiar()
-            elif getattr(self, "familiar", None):
-                # Already running: switch species if the type changed.
-                self.familiar.set_species(self.settings.value(KEY_FAMILIAR_TYPE, "wizard"))
+            # The familiar is the orb, and the orb is the interface, so there
+            # is nothing left to create or tear down here — only the species
+            # to keep in step with the setting.
+            orb = self.familiar
+            if orb is not None:
+                orb.set_species(self.settings.value(KEY_FAMILIAR_TYPE, "wizard"))
 
             self.apply_overlay_opacity()
             self.apply_overlay_text_size()
@@ -2568,7 +2456,6 @@ class XianApp(QWidget):
         lives outside that contract and stays put.
         """
         raw = [
-            getattr(self, "osd", None),
             getattr(self, "chat_sidebar", None),
             getattr(self, "notes_sidebar", None),
             getattr(self, "how_to_say_dialog", None),
@@ -2578,6 +2465,15 @@ class XianApp(QWidget):
         ]
         if include_familiar:
             raw.append(getattr(self, "familiar", None))
+        # The new UI's own surfaces, so the hide-everything gesture reaches
+        # them too — it exists for a fullscreen game, and a translation box
+        # left painted over one is exactly what it is for.
+        shell = getattr(self, "_shell", None)
+        if shell is not None:
+            raw.append(getattr(shell, "panel", None))
+            boxes = getattr(shell, "boxes", None)
+            if boxes is not None:
+                raw.extend(boxes.boxes)
         raw.extend(self._bubbles)
         raw.extend(self._active_bubbles.values())
         seen = set()
@@ -2616,14 +2512,6 @@ class XianApp(QWidget):
         active = self.layout_edit_mode_active
         logger.info("Layout Edit Mode toggled: %s", active)
         
-        # OSD: Make sure it's visible so it can be moved
-        if active:
-            if not self.osd.isVisible():
-                self.osd.show_centered()
-        else:
-            self.osd.hide()
-            
-        self.osd.set_edit_mode(active)
         self.chat_sidebar.set_edit_mode(active)
         self.how_to_say_dialog.set_edit_mode(active)
         
@@ -2675,7 +2563,6 @@ class XianApp(QWidget):
             self._target_was_minimized = False
             
             # Apply transient parent to already created widgets
-            self._apply_transient_parent(self.osd)
             self._apply_transient_parent(self.chat_sidebar)
             self._apply_transient_parent(self.how_to_say_dialog)
         else:
@@ -2775,11 +2662,6 @@ class XianApp(QWidget):
         """Align active overlays to the target window geometry initially."""
         tx, ty, tw, th = geom
 
-        if self._is_valid_widget(self.osd) and self.osd.isVisible():
-            self.osd.move(
-                tx + (tw - self.osd.width()) // 2,
-                ty + (th - self.osd.height()) // 2
-            )
 
         if self._is_valid_widget(self.how_to_say_dialog) and self.how_to_say_dialog.isVisible():
             self.how_to_say_dialog.move(
@@ -2810,11 +2692,6 @@ class XianApp(QWidget):
             if bubble.isVisible():
                 bubble.move(bubble.x() + dx, bubble.y() + dy)
 
-        if self._is_valid_widget(self.osd) and self.osd.isVisible():
-            self.osd.move(
-                tx + (tw - self.osd.width()) // 2,
-                ty + (th - self.osd.height()) // 2
-            )
 
         if self._is_valid_widget(self.how_to_say_dialog) and self.how_to_say_dialog.isVisible():
             self.how_to_say_dialog.move(
@@ -2848,7 +2725,7 @@ class XianApp(QWidget):
                 logger.error("Error tearing down the UI shell: %s", exc)
 
         # Stop periodic timers first so nothing new is dispatched mid-teardown.
-        for timer_attr in ("_telemetry_timer", "dialogue_timer", "osd_timer", "window_tracking_timer"):
+        for timer_attr in ("_telemetry_timer", "dialogue_timer", "window_tracking_timer"):
             timer = getattr(self, timer_attr, None)
             if timer is not None:
                 try:

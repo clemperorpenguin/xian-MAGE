@@ -16,17 +16,16 @@
 #
 # Contact: clem@pendragon.systems (Clementine Pendragon, c/o Xian Project Development)
 
-"""Which surface layer the app runs: the classic one, or the new one.
+"""The app's surface layer: translation boxes and the orb.
 
-``XianApp.__init__`` builds the classic shell inline, as it always has — the
-tray icon, the command OSD, the leader-key listener, the familiar.  This module
-is called at the end of that, and either leaves it exactly as it is or stands
-the new UI up in front of it, turning off the parts it supersedes.
+There used to be two of these and a setting to pick between them.  The old one
+— a tray icon, a leader key, a menu of letters and an OSD to remember them by —
+is gone, and this is what is left.
 
-Additive on purpose.  Extracting the classic wiring into a class of its own
-would touch several hundred lines of a file that works, to no benefit: the
-classic shell has to end up byte-identical in behaviour, and the surest way to
-achieve that is not to move it.
+Kept deliberately: the system tray, which is the app's presence in the desktop
+and the only way back when every overlay is hidden; and the overlay-toggle
+double-tap, which is the one gesture with no clickable substitute, because a
+fullscreen game holding the pointer leaves nothing to click.
 """
 
 from __future__ import annotations
@@ -35,11 +34,10 @@ import logging
 
 from PyQt6.QtCore import QObject
 
-from mage.settings_keys import KEY_NEW_UI, is_true
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ClassicShell", "NewShell", "install_shell"]
+__all__ = ["NewShell", "Shell", "install_shell"]
 
 
 class Shell(QObject):
@@ -54,15 +52,6 @@ class Shell(QObject):
 
     def teardown(self) -> None:
         """Release anything the shell owns."""
-
-
-class ClassicShell(Shell):
-    """The tray, the OSD and the leader key — everything as it was.
-
-    Deliberately empty: the wiring already happened in ``XianApp.__init__``.
-    This exists so the app always has a shell object to ask, rather than
-    checking a setting at every call site.
-    """
 
 
 class NewShell(Shell):
@@ -98,6 +87,7 @@ class NewShell(Shell):
         self.panel.mic_toggled.connect(self.set_microphone)
         self.panel.message_sent.connect(self._on_message)
         self.panel.add_box_requested.connect(self.add_box)
+        self.panel.translate_once_requested.connect(self.translate_once)
         self.panel.settings_requested.connect(app._open_settings)
         self.panel.notes_requested.connect(app.toggle_notes)
 
@@ -129,6 +119,28 @@ class NewShell(Shell):
     def _on_boxes_drawn(self, rects) -> None:
         for rect in rects:
             self.boxes.add_box(rect)
+        self._on_picker_closed()
+
+    def translate_once(self) -> None:
+        """Translate a region once and leave nothing behind.
+
+        The same drag as placing a box, so there is one gesture to learn; what
+        differs is that nothing persists afterwards.  For a sign, an item
+        tooltip, one line of a menu you are never coming back to.
+        """
+        from mage.ui.lens import CinematicLensOverlay
+
+        if self._picker is not None:
+            return
+        self._picker = CinematicLensOverlay()
+        self._picker.confirmed.connect(self._on_once_drawn)
+        self._picker.closed.connect(self._on_picker_closed)
+        self._picker.showFullScreen()
+
+    def _on_once_drawn(self, rects) -> None:
+        self.orb.set_state(self._OrbState.READING)
+        for rect in rects:
+            self.boxes.translate_once(rect)
         self._on_picker_closed()
 
     def _on_picker_closed(self) -> None:
@@ -187,6 +199,7 @@ class NewShell(Shell):
 
     def _start_voice(self) -> None:
         from mage.settings_keys import KEY_SOURCE_LANG, KEY_TARGET_LANG
+        from mage.translation import make_translator
         from mage.workers import OrbVoiceWorker
         from shared_types import constants
 
@@ -196,6 +209,7 @@ class NewShell(Shell):
             self.app.processor,
             source_lang=self.app.settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG),
             target_lang=self.app.settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG),
+            translator=make_translator(self.app.settings, self.app.processor),
         )
         self._voice_worker.utterance.connect(self._on_utterance)
         self._voice_worker.status.connect(self.panel.set_status)
@@ -237,17 +251,14 @@ class NewShell(Shell):
 
 
 def install_shell(app) -> Shell:
-    """Return the shell the settings ask for, having wired it up.
+    """Wire up the interface.
 
-    A failure here must not take the app down with it: the classic shell is
-    always a working fallback, and a user who cannot start is a user who
-    cannot switch the setting back.
+    A failure here leaves a bare :class:`Shell`, which does nothing but answer
+    the questions the app asks of it.  That is a poor experience and a clear
+    one; raising instead would take the whole app down over a widget.
     """
-    if not is_true(app.settings.value(KEY_NEW_UI, "false")):
-        return ClassicShell(app)
-
     try:
         return NewShell(app)
     except Exception as exc:
-        logger.error("could not start the new UI; falling back to the classic one: %s", exc)
-        return ClassicShell(app)
+        logger.error("could not start the interface: %s", exc)
+        return Shell(app)
