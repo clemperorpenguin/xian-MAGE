@@ -300,6 +300,15 @@ class BoxManager(QObject):
         for box in list(self.boxes):
             self.remove_box(box)
 
+    def overlays(self) -> list:
+        """The painted overlays, for the keep-on-top tick.
+
+        These are the windows the translations are actually drawn in, so
+        leaving them out of the promote loop meant the boxes stayed above a
+        fullscreen game and the text inside them did not.
+        """
+        return [overlay for overlay in self._overlays.values() if overlay is not None]
+
     def exclude_regions(self) -> list[QRect]:
         """The Ignore boxes, for masking out of every other box's frame."""
         return [box.geometry() for box in self.boxes if box.mode is BoxMode.IGNORE]

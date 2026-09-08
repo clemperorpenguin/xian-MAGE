@@ -38,9 +38,7 @@ from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from mage.utils.window_binder import (
-    set_above_state_x11,
-    set_bypass_compositor_hint_x11,
-    set_overlay_window_type_x11,
+    keep_window_above,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,17 +127,14 @@ class InpaintOverlay(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        set_bypass_compositor_hint_x11(self.winId())
-        set_above_state_x11(self.winId())
-        set_overlay_window_type_x11(self.winId())
+        keep_window_above(self.winId())
 
     def promote(self):
         """Re-assert stacking above a fullscreen game without taking focus."""
         if not self.isVisible():
             return
         self.raise_()
-        set_above_state_x11(self.winId())
-        set_overlay_window_type_x11(self.winId())
+        keep_window_above(self.winId())
 
 
 def _draw_fitted_text(painter: QPainter, region: InpaintRegion) -> None:

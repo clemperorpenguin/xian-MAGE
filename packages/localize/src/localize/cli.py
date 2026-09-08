@@ -24,66 +24,28 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 LEMONADE_URL = ""
 MODEL = ""
 
-def resolve_model(api_url: str, model_name: str) -> str:
-    """If model_name is a composite omni model/collection, resolve it to its LLM component."""
-    base_url = api_url
-    if "/v1" in base_url:
-        base_url = base_url.split("/v1")[0]
-    models_url = f"{base_url.rstrip('/')}/v1/models?show_all=true"
-    
-    try:
-        req = urllib.request.Request(models_url)
-        with urllib.request.urlopen(req, timeout=5.0) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            models = data.get("data", [])
-            
-            model_info = next((m for m in models if m.get("id") == model_name), None)
-            if not model_info:
-                return model_name
-                
-            if model_info.get("recipe") == "collection.omni" or model_name.startswith("LMX-Omni-"):
-                components = model_info.get("components", [])
-                if not components:
-                    return model_name
-                
-                # Try explicit chat/tool-calling labels
-                for comp_id in components:
-                    comp_info = next((m for m in models if m.get("id") == comp_id), None)
-                    labels = comp_info.get("labels", []) if comp_info else []
-                    if any(l in labels for l in ["chat", "tool-calling", "reasoning"]):
-                        logging.info(f"Resolved Omni model '{model_name}' to chat component '{comp_id}'")
-                        return comp_id
-                
-                # Check keywords in ID
-                for comp_id in components:
-                    lower_id = comp_id.lower()
-                    if any(kw in lower_id for kw in ["qwen", "llama", "gemma", "mistral", "deepseek", "glm"]):
-                        logging.info(f"Resolved Omni model '{model_name}' to chat component '{comp_id}' via keyword")
-                        return comp_id
-                        
-                logging.info(f"Resolved Omni model '{model_name}' to default component '{components[0]}'")
-                return components[0]
-    except Exception as e:
-        logging.warning(f"Could not auto-resolve Omni model component ({e}). Using raw model name.")
-        
-    return model_name
+#: The translator.  Pinned: see get_lemonade_config.
+MODEL_ID = "Hy-MT2-7B-GGUF-Q4_K_M"
 
 def get_lemonade_config():
+    """The server to talk to, and the model to talk to it with.
+
+    The model is pinned rather than read from settings.  Everything below is
+    written against Hy-MT2's published instruction formats, and a general chat
+    model asked the same questions answers them in prose that lands in a
+    locale file.  The 7B rather than the 1.8B because this is an offline batch
+    job where quality is the only axis that matters — nobody is waiting on a
+    tick.
+    """
     settings = QSettings("Xian", "VideoGameTranslator")
     api_url = settings.value("api_url", "http://localhost:13305/v1")
-    # Mirrors shared_types.constants.DEFAULT_MODEL; localize deliberately
-    # depends on nothing but PyQt, so the name is repeated rather than imported.
-    model = settings.value("api_model", "Xian-Ultra")
-    
-    resolved_model = resolve_model(api_url, model)
-    
-    # Ensure it points to the chat completions endpoint
+
     if not api_url.endswith("/chat/completions"):
         if not api_url.endswith("/"):
             api_url += "/"
         api_url += "chat/completions"
-        
-    return api_url, resolved_model
+
+    return api_url, MODEL_ID
 
 
 TARGET_LANGUAGES = {
@@ -97,9 +59,10 @@ TARGET_LANGUAGES = {
     "vi": "Vietnamese"
 }
 
-# Number of translation keys to send per LLM request. Small models truncate
-# output when asked to translate all ~90 keys at once, so we batch them.
-BATCH_SIZE = 15
+# One string per request.  Hy-MT2 is a machine-translation model: asked for a
+# JSON object of many keys it translates the request itself, so there is no
+# batching to tune here — only how many of these single requests are in flight.
+MAX_IN_FLIGHT = 8
 MAX_RETRIES = 3
 
 
@@ -140,97 +103,106 @@ def _stale_keys(en_data: dict, existing: dict, digests: dict) -> dict:
     return out
 
 
-def _translate_batch(batch: dict, target_lang_name: str) -> dict:
-    """Translate a single batch of en.json entries into the target language."""
+#: Hy-MT2's published default instruction format.
+DEFAULT_TEMPLATE = (
+    "Translate the following text into {target_lang}. Note that you should only output "
+    "the translated result without any additional explanation:\n\n{source_text}"
+)
 
-    system_prompt = (
-        f"You are a professional localization translator. Translate software UI strings into {target_lang_name}.\n"
-        "Input format: A JSON object where each key maps to a nested object containing a 'value' (the English string to translate) and a 'context' (description of where it is used).\n"
-        "Output format: Return ONLY a flat JSON object mapping the exact same keys directly to their translated string values.\n"
-        "Example Input:\n"
-        "{\n"
-        "  \"settings.dialog.title\": {\n"
-        "    \"value\": \"Xian — Settings\",\n"
-        "    \"context\": \"Window title\"\n"
-        "  }\n"
-        "}\n"
-        "Example Output:\n"
-        "{\n"
-        "  \"settings.dialog.title\": \"Xian — 设置\"\n"
-        "}\n"
-        "Strict Rules:\n"
-        "1. Do not include any explanations, markdown code blocks (like ```json), or thinking process in the output.\n"
-        "2. Output ONLY the raw JSON object."
-    )
+#: Its background-information format.  en.json carries a `context` line for
+#: every string saying where it is used, which is exactly what this slot is
+#: for: "Open" on a button and "Open" as a status word want different words in
+#: most languages, and the context is the only thing that distinguishes them.
+CONTEXT_TEMPLATE = (
+    "[Background Information]\n{background_text}\n\n"
+    "Please translate the following text into {target_lang}, taking the provided "
+    "background information into consideration.\n\n"
+    "[Source Text]\n{source_text}"
+)
 
-    user_content = json.dumps(batch, ensure_ascii=False, indent=2)
 
+def build_prompt(entry, target_lang_name: str) -> str:
+    """One user turn, in the model's own format.
+
+    No system prompt: an MT model translates instructions rather than
+    following them, so anything put there comes back as part of the string.
+    """
+    if isinstance(entry, dict):
+        value = entry.get("value", "")
+        context = (entry.get("context") or "").strip()
+    else:
+        value, context = str(entry), ""
+
+    if context:
+        return CONTEXT_TEMPLATE.format(
+            background_text=context, target_lang=target_lang_name, source_text=value
+        )
+    return DEFAULT_TEMPLATE.format(target_lang=target_lang_name, source_text=value)
+
+
+def _translate_one(entry, target_lang_name: str) -> str:
+    """Translate a single UI string, returning the model's bare output."""
     payload = {
         "model": MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 4096,
-        "response_format": {"type": "json_object"},
-        "frequency_penalty": 0.6,
-        "presence_penalty": 0.2,
-        "repetition_penalty": 1.15,
-        "chat_template_kwargs": {"enable_thinking": False}
+        "messages": [{"role": "user", "content": build_prompt(entry, target_lang_name)}],
+        "temperature": 0.0,
+        "max_tokens": 512,
     }
 
     req = urllib.request.Request(
         LEMONADE_URL,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"}
+        headers={"Content-Type": "application/json"},
     )
 
     with urllib.request.urlopen(req, timeout=120.0) as response:
         result = json.loads(response.read().decode("utf-8"))
-        content = result["choices"][0]["message"]["content"]
-        return json.loads(content)
+        return (result["choices"][0]["message"]["content"] or "").strip()
+
+
+def _translate_with_retries(key: str, entry, target_lang_name: str) -> tuple[str, str | None]:
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            text = _translate_one(entry, target_lang_name)
+            if text:
+                return key, text
+            logging.error("  %s attempt %d — empty translation", key, attempt)
+        except urllib.error.URLError as e:
+            logging.error("  %s attempt %d — connection error: %s", key, attempt, e)
+        except (KeyError, json.JSONDecodeError) as e:
+            logging.error("  %s attempt %d — unreadable response: %s", key, attempt, e)
+        except Exception as e:
+            logging.error("  %s attempt %d — unexpected error: %s", key, attempt, e)
+    logging.warning("  %s FAILED after %d attempts — leaving it untranslated", key, MAX_RETRIES)
+    return key, None
 
 
 def translate_strings(en_data: dict, target_lang_name: str) -> dict:
-    """Translate all en.json entries into the target language using batched requests."""
+    """Translate every entry, a request at a time, several at once.
 
-    keys = list(en_data.keys())
-    batches = [keys[i:i + BATCH_SIZE] for i in range(0, len(keys), BATCH_SIZE)]
+    A key that fails is left out rather than guessed at: the runtime falls
+    back to the English string, which is a worse experience than a
+    translation and a much better one than a wrong translation nobody knows
+    is wrong.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    total = len(en_data)
+    done = 0
     merged: dict = {}
-    total = len(batches)
 
-    for idx, batch_keys in enumerate(batches, 1):
-        batch = {k: en_data[k] for k in batch_keys}
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                result = _translate_batch(batch, target_lang_name)
-                merged.update(result)
-                logging.info(
-                    "  Batch %d/%d OK (%d keys)", idx, total, len(result)
-                )
-                break
-            except urllib.error.URLError as e:
-                logging.error(
-                    "  Batch %d/%d attempt %d — connection error: %s",
-                    idx, total, attempt, e,
-                )
-            except json.JSONDecodeError as e:
-                logging.error(
-                    "  Batch %d/%d attempt %d — JSON parse error: %s",
-                    idx, total, attempt, e,
-                )
-            except Exception as e:
-                logging.error(
-                    "  Batch %d/%d attempt %d — unexpected error: %s",
-                    idx, total, attempt, e,
-                )
-        else:
-            logging.warning(
-                "  Batch %d/%d FAILED after %d attempts — skipping %d keys",
-                idx, total, MAX_RETRIES, len(batch_keys),
-            )
+    with ThreadPoolExecutor(max_workers=MAX_IN_FLIGHT) as pool:
+        futures = [
+            pool.submit(_translate_with_retries, key, entry, target_lang_name)
+            for key, entry in en_data.items()
+        ]
+        for future in futures:
+            key, text = future.result()
+            done += 1
+            if text:
+                merged[key] = text
+            if done % 25 == 0 or done == total:
+                logging.info("  %d/%d translated", done, total)
 
     return merged
 

@@ -53,10 +53,20 @@ def test_a_translated_key_resolves_in_its_own_language():
 
 def test_an_untranslated_key_falls_back_to_english():
     """Every string added between one localize.cli run and the next is in this
-    state, and a button labelled "newui.orb.button.send" is not a fallback."""
-    state.load_locale("zh")
+    state, and a button labelled "newui.orb.button.send" is not a fallback.
 
-    assert state.t("newui.orb.button.send") == "Send"
+    The gap is simulated rather than borrowed from a real key: any key that is
+    genuinely missing today gets translated by the next localize.cli run, and
+    a test that depends on that is a test that fails for the wrong reason.
+    """
+    state.load_locale("zh")
+    key = "settings.dialog.title"
+    english = _english()[key]["value"]
+    removed = state._locale_data.pop(key)
+    try:
+        assert state.t(key) == english
+    finally:
+        state._locale_data[key] = removed
 
 
 def test_a_key_in_no_locale_at_all_returns_itself():
@@ -73,9 +83,10 @@ def test_english_reads_the_value_out_of_the_reference_structure():
 
 
 def test_an_unknown_language_still_serves_english():
+    """No locale file at all, so every lookup goes to the fallback."""
     state.load_locale("qq")
 
-    assert state.t("newui.orb.button.send") == "Send"
+    assert state.t("settings.dialog.title") == _english()["settings.dialog.title"]["value"]
 
 
 @pytest.mark.parametrize("lang", ["zh", "ja", "ko", "ru", "es", "ar", "hi", "vi"])

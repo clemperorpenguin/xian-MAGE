@@ -29,11 +29,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QPoint, QRect, QEvent
 from PyQt6.QtGui import QPainter, QColor, QPen, QGuiApplication
-from mage.utils.window_binder import (
-    set_bypass_compositor_hint_x11,
-    set_above_state_x11,
-    set_overlay_window_type_x11,
-)
+from mage.utils.window_binder import keep_window_above
 
 logger = logging.getLogger(__name__)
 
@@ -294,10 +290,11 @@ class MageOverlayWindow(QWidget):
             # WA_ShowWithoutActivating keeps this from stealing focus on re-show.
             self.show()
         self.raise_()
-        set_above_state_x11(self.winId())
-        # Under XWayland, keep-above alone loses to a fullscreen game; re-tag
-        # the overlay into KWin's over-fullscreen (critical-notification) layer.
-        set_overlay_window_type_x11(self.winId())
+        # Re-assert the platform's own "above everything" state.  On Windows
+        # that is HWND_TOPMOST, which a fullscreen game can take from us; on
+        # XWayland, keep-above alone loses to one, so the overlay is re-tagged
+        # into KWin's over-fullscreen layer.
+        keep_window_above(self.winId())
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and (self._edit_mode_active or not self._click_through):
@@ -361,10 +358,6 @@ class MageOverlayWindow(QWidget):
         # Pick up any descendants added since the last show so the whole body
         # stays draggable.
         self._refresh_drag_filter()
-        set_bypass_compositor_hint_x11(self.winId())
-        set_above_state_x11(self.winId())
-        # XWayland-only: place the overlay in KWin's layer above fullscreen
-        # games. No-op on native X11 (keep-above already suffices there) and
-        # off-xcb. Re-applied here because Qt resets _NET_WM_WINDOW_TYPE
-        # whenever the native window is recreated (e.g. on a flags change).
-        set_overlay_window_type_x11(self.winId())
+        # Every time the window appears: Qt recreates the native window on a
+        # flags change and the platform state does not survive that.
+        keep_window_above(self.winId())

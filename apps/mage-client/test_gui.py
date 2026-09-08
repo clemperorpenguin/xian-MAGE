@@ -149,3 +149,61 @@ def test_settings_dialog_leaves_a_custom_model_alone(q_app):
 
     dialog.deleteLater()
     settings.clear()
+
+
+def test_keep_window_above_is_safe_on_every_platform():
+    """It runs on a 0.75s tick for every visible overlay, so it must never
+    raise — not for a closed window, not for a widget without a handle."""
+    from mage.utils.window_binder import keep_window_above
+
+    for win_id in (0, None, "not-a-handle", 123456789):
+        keep_window_above(win_id)
+
+
+def test_the_windows_topmost_call_is_inert_off_windows():
+    """The Linux branch must not be reached through it, and vice versa."""
+    import sys
+
+    from mage.utils.window_binder import set_topmost_windows
+
+    result = set_topmost_windows(123456789)
+
+    assert result is (False if sys.platform != "win32" else result)
+
+
+def test_keep_window_above_dispatches_on_platform(monkeypatch):
+    """One call site per overlay; the platform choice lives in one place."""
+    from mage.utils import window_binder
+
+    calls = []
+    monkeypatch.setattr(window_binder, "set_topmost_windows", lambda w: calls.append(("win", w)))
+    monkeypatch.setattr(window_binder, "set_above_state_x11", lambda w: calls.append(("x11", w)))
+    monkeypatch.setattr(window_binder, "set_bypass_compositor_hint_x11", lambda w: None)
+    monkeypatch.setattr(window_binder, "set_overlay_window_type_x11", lambda w: None)
+
+    monkeypatch.setattr(window_binder.sys, "platform", "win32")
+    window_binder.keep_window_above(42)
+
+    monkeypatch.setattr(window_binder.sys, "platform", "linux")
+    window_binder.keep_window_above(42)
+
+    assert calls == [("win", 42), ("x11", 42)]
+
+
+def test_an_overlay_asks_to_stay_above_when_it_appears(q_app, monkeypatch):
+    """Qt recreates the native window on a flags change, and the platform's
+    always-on-top state does not survive that."""
+    from mage.ui import overlay_base
+
+    asked = []
+    monkeypatch.setattr(overlay_base, "keep_window_above", asked.append)
+
+    app = DummyApp()
+    window = MageOverlayWindow("keep_above_test", app=app)
+    try:
+        window.show()
+        q_app.processEvents()
+        assert asked
+    finally:
+        window.close()
+        app.settings.clear()

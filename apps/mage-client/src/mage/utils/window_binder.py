@@ -558,6 +558,68 @@ class WindowBinder:
         return []
 
 
+def set_topmost_windows(win_id) -> bool:
+    """Put a window in the Windows always-on-top band.
+
+    Qt's ``WindowStaysOnTopHint`` sets the topmost style once, at creation.
+    That is enough until something else claims the band — a fullscreen
+    DirectX game taking exclusive mode, or another topmost window being
+    raised — after which the overlay is behind the thing it is annotating and
+    nothing tells the app it happened.  Re-asserting is the Windows
+    counterpart of the ``_NET_WM_STATE_ABOVE`` message below, and it is called
+    from the same places.
+
+    ``SWP_NOACTIVATE`` is the part that matters: raising the overlay must
+    never take focus, or the game loses input every time the overlay is
+    promoted.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        win_id = int(win_id)
+    except (TypeError, ValueError):
+        return False
+    if not win_id:
+        return False
+
+    HWND_TOPMOST = -1
+    SWP_NOSIZE = 0x0001
+    SWP_NOMOVE = 0x0002
+    SWP_NOACTIVATE = 0x0010
+    SWP_NOOWNERZORDER = 0x0200
+
+    try:
+        user32 = ctypes.windll.user32
+        ok = user32.SetWindowPos(
+            ctypes.c_void_p(win_id),
+            ctypes.c_void_p(HWND_TOPMOST),
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )
+        logger.debug("SetWindowPos(HWND_TOPMOST) on %s -> %s", win_id, bool(ok))
+        return bool(ok)
+    except Exception as e:
+        logger.debug("Failed to set HWND_TOPMOST: %s", e)
+        return False
+
+
+def keep_window_above(win_id) -> None:
+    """Re-assert "stay above everything" for one window, on any platform.
+
+    One call so no call site has to know which platform it is on, and so a
+    platform gaining a mechanism does not mean hunting for the places that
+    needed it.  Every branch is a no-op where it does not apply.
+    """
+    if sys.platform == "win32":
+        set_topmost_windows(win_id)
+        return
+    set_bypass_compositor_hint_x11(win_id)
+    set_above_state_x11(win_id)
+    # XWayland only; a no-op on native X11 and off-xcb.  Re-applied because Qt
+    # resets _NET_WM_WINDOW_TYPE whenever the native window is recreated.
+    set_overlay_window_type_x11(win_id)
+
+
 #: One shared connection for the window-hint helpers below. They run for every
 #: visible overlay on a 0.75 s tick, so the connection is opened once and kept.
 _hint_display = None

@@ -132,3 +132,25 @@ Run §3's items in each cell, then these:
 ## 10. Cross-platform spot checks (if shipping those builds)
 - [ ] 🟡 Windows lite + full `.zip` launch and connect to Lemonade.
 - [ ] 🟡 macOS `.app` launches; Accessibility prompt appears; hotkeys work after grant.
+
+### Always-on-top (test on each platform you ship)
+
+The overlay is only useful if it is in front of the game.  Qt sets the
+always-on-top flag once at window creation; something else claiming the band
+later takes it, and nothing tells the app.  So it is re-asserted for every
+visible overlay on a 0.75 s tick — `HWND_TOPMOST` on Windows,
+`_NET_WM_STATE_ABOVE` (plus KWin's over-fullscreen layer) on X11/XWayland.
+
+- [ ] 🟢 Orb, boxes and a painted translation all stay in front of a
+      **borderless windowed** game after alt-tabbing away and back.
+- [ ] 🟢 Clicking a box or the orb never takes focus from the game — the game
+      keeps receiving input while you interact with the overlay.
+- [ ] 🟢 Another always-on-top window (Task Manager on Windows, "keep above" on
+      Linux) raised over the overlay: within a second the overlay is in front
+      again.
+- [ ] 🟡 Alt-tab out and back several times in a row — no flicker, no window
+      that fails to come back.
+- [ ] ⚪ **Exclusive fullscreen is expected to fail.** No topmost window can
+      draw over a game that has taken the display exclusively; this is an OS
+      guarantee, not a bug to file. Borderless windowed is the supported mode
+      and worth saying so in any bug report about it.

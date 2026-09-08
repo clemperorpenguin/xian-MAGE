@@ -2474,6 +2474,10 @@ class XianApp(QWidget):
             boxes = getattr(shell, "boxes", None)
             if boxes is not None:
                 raw.extend(boxes.boxes)
+                # The overlays the translations are painted in, which are
+                # separate windows from the boxes that frame them.
+                raw.extend(boxes.overlays())
+        raw.append(getattr(self, "inpaint_overlay", None))
         raw.extend(self._bubbles)
         raw.extend(self._active_bubbles.values())
         seen = set()
