@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { translatePage } from '../src/core/pipeline';
 import { Segment } from '../src/core/segment';
-import { MashaConfig } from '../src/platform/bridge';
+import { DEFAULT_CONFIG, MashaConfig } from '../src/platform/bridge';
 import { FetchFn } from '../src/core/translator';
 
 interface Call {
@@ -36,6 +36,7 @@ function messagesOf(call: Call): { role: string; content: string }[] {
 
 function makeConfig(overrides: Partial<MashaConfig> = {}): MashaConfig {
   return {
+    ...DEFAULT_CONFIG,
     serverUrl: 'http://localhost:13305/v1',
     sourceLang: 'Auto',
     targetLang: 'English',

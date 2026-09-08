@@ -25,12 +25,20 @@
  * hook, QWebEngine JS injection). See docs/FALKON.md.
  */
 
-import { DEFAULT_LEMONADE_URL, DEFAULT_SOURCE_LANG, DEFAULT_TARGET_LANG } from '../core/constants';
+import { DEFAULT_ASR_MODEL, DEFAULT_BRIDGE_URL, DEFAULT_LEMONADE_URL, DEFAULT_SOURCE_LANG, DEFAULT_TARGET_LANG } from '../core/constants';
 
-/** Persisted user configuration. */
+/**
+ * Persisted user configuration.
+ *
+ * Flat by design: `getConfig` merges stored settings over the defaults with a
+ * shallow spread, so a nested settings object would arrive from an older
+ * install missing whichever field was added since.
+ */
 export interface MashaConfig {
   /** OpenAI-compatible Lemonade base URL (normalized to end in ``/v1``). */
   serverUrl: string;
+  /** Base URL of the local Xian bridge (OCR, documents, glossary, cache). */
+  bridgeUrl: string;
   /** ``"Auto"`` or an explicit source language name. */
   sourceLang: string;
   targetLang: string;
@@ -38,15 +46,54 @@ export interface MashaConfig {
   model?: string;
   /** Optional stylistic register terms. */
   styles: string[];
+  /** Domain the model should translate as an expert in (e.g. "medicine"). */
+  expertise: string;
+
+  // --- Features. Everything off by default: a translator that starts
+  // rewriting pages and capturing audio unasked is not one you would install.
+  /** Hover-to-translate, and the modifier that arms it. */
+  hoverMode: 'off' | 'hover' | 'shift' | 'alt' | 'ctrl';
+  /** Triple-space to translate what you typed, in editable fields. */
+  composeEnabled: boolean;
+  /** Translate a video's own <track> cues. */
+  subtitlesEnabled: boolean;
+  /** Capture video audio and translate the transcript. Per-site opt-in. */
+  audioSubtitlesEnabled: boolean;
+  /** Whisper model Lemonade transcribes with on the realtime socket. */
+  asrModel: string;
+  /** Translate images through the bridge's OCR path, from the context menu. */
+  imagesEnabled: boolean;
+  /** Translate comic panels as the reader scrolls. */
+  comicsEnabled: boolean;
+  /** Right-to-left panel order (manga) rather than left-to-right. */
+  comicRtl: boolean;
 }
 
 export const DEFAULT_CONFIG: MashaConfig = {
   serverUrl: DEFAULT_LEMONADE_URL,
+  bridgeUrl: DEFAULT_BRIDGE_URL,
   sourceLang: DEFAULT_SOURCE_LANG,
   targetLang: DEFAULT_TARGET_LANG,
   model: undefined,
   styles: [],
+  expertise: '',
+  hoverMode: 'off',
+  composeEnabled: false,
+  subtitlesEnabled: false,
+  audioSubtitlesEnabled: false,
+  asrModel: DEFAULT_ASR_MODEL,
+  imagesEnabled: false,
+  comicsEnabled: false,
+  comicRtl: true,
 };
+
+/** What the bridge says it can actually do — see the bridge's GET /health. */
+export interface BridgeHealth {
+  reachable: boolean;
+  version?: string;
+  ocr: boolean;
+  documents: boolean;
+}
 
 /** A captured selection plus the surrounding page context for the model. */
 export interface SelectionContext {
@@ -126,8 +173,13 @@ export interface PlatformBridge {
 
   /** Attach subtitle translation to video elements with text tracks. */
   attachTrackSubtitles(): Promise<() => void>;
-  /** Attach audio-capture subtitle translation (basic, opt-in). */
-  attachAudioSubtitles(serverUrl: string, targetLang: string): Promise<() => void>;
+  /**
+   * Attach audio-capture subtitle translation (basic, opt-in).
+   *
+   * The recogniser is chosen by model, not by language: Lemonade's realtime
+   * socket takes `?model=<whisper>` and detects the spoken language itself.
+   */
+  attachAudioSubtitles(serverUrl: string, asrModel: string): Promise<() => void>;
 
   // --- M5: Images + Comics ---
 
@@ -142,6 +194,9 @@ export interface PlatformBridge {
   startDocumentJob(file: Blob, filename: string): Promise<{ jobId: string }>;
   /** Poll a document job's status. */
   getDocumentStatus(jobId: string): Promise<{ status: string; progress: number }>;
+
+  /** Ask the bridge what it can do, so unusable features stay hidden. */
+  getBridgeHealth(): Promise<BridgeHealth>;
 
   // --- M7: Glossary + Cache ---
 

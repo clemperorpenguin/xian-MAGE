@@ -1,26 +1,46 @@
 /*
  * Tests for image/comic translation.
  *
- * Browser-free — tests the core image translation flow using mock fetch.
+ * Browser-free — the module talks to the background worker rather than the
+ * network (an MV3 content script has no cross-origin fetch of its own), so the
+ * seam under test is `chrome.runtime.sendMessage`.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { translateImage, DEFAULT_IMAGE_CONFIG } from '../src/entrypoints/content/images';
 
-/** Mock FileReader for Node.js test environment. */
-function mockFileReader() {
-  (globalThis as any).FileReader = class MockFileReader {
-    onloadend: (() => void) | null = null;
-    result: string | null = null;
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPj/AAADBQEARFQ0VgAAAABJRU5ErkJggg==';
 
-    readAsDataURL(blob: Blob) {
-      this.result = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPj/AAADBQEARFQ0VgAAAABJRU5ErkJggg==';
-      this.onloadend?.();
+/** A background that answers the way the real one does. */
+function mockBackground(overrides: Record<string, unknown> = {}) {
+  const sendMessage = vi.fn(async (message: any) => {
+    if (message.type in overrides) return overrides[message.type];
+    switch (message.type) {
+      case 'MASHA_FETCH_IMAGE':
+        return { success: true, dataUrl: PNG };
+      case 'MASHA_OCR':
+        return {
+          success: true,
+          result: {
+            blocks: [
+              { quad: { x1: 0, y1: 0, x2: 100, y2: 0, x3: 100, y3: 20, x4: 0, y4: 20 }, text: 'Hi', confidence: 0.9 },
+              { quad: { x1: 0, y1: 20, x2: 100, y2: 20, x3: 100, y3: 40, x4: 0, y4: 40 }, text: 'Hello world', confidence: 0.95 },
+            ],
+          },
+        };
+      case 'MASHA_TRANSLATE_TEXT':
+        return { success: true, translation: 'Bonjour le monde' };
+      case 'MASHA_OCR_RENDER':
+        return { success: true, image: PNG };
+      default:
+        return { success: false, error: `unexpected ${message.type}` };
     }
-  };
+  });
+  (globalThis as any).chrome = { runtime: { id: 'test', sendMessage } };
+  return sendMessage;
 }
 
-/** Mock document.querySelectorAll for Node. */
+/** Mock the parts of `document` the renderer touches. */
 function mockDocument() {
   (globalThis as any).document = {
     querySelectorAll: () => [],
@@ -28,82 +48,45 @@ function mockDocument() {
   };
 }
 
-/** Helper: create a mock fetch. */
-function mockImageFetch(mockFetch: any) {
-  mockFetch.mockImplementation(async (url: string) => {
-    // OCR endpoint — must come before generic http:// check
-    if (typeof url === 'string' && url.includes('/ocr') && !url.includes('/render')) {
-      return {
-        ok: true,
-        json: async () => ({
-          blocks: [
-            { quad: { x1: 0, y1: 0, x2: 100, y2: 0, x3: 100, y3: 20, x4: 0, y4: 20 }, text: 'Hi', confidence: 0.9 },
-            { quad: { x1: 0, y1: 20, x2: 100, y2: 20, x3: 100, y3: 40, x4: 0, y4: 40 }, text: 'Hello world', confidence: 0.95 },
-          ],
-        }),
-      };
-    }
-    // Translation endpoint
-    if (typeof url === 'string' && url.includes('/chat/completions')) {
-      return {
-        ok: true,
-        json: async () => ({ choices: [{ message: { content: 'Bonjour le monde' } }] }),
-      };
-    }
-    // Image fetch: return a blob that FileReader will handle
-    if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
-      return {
-        ok: true,
-        blob: async () => new Blob(['fake-png-bytes'], { type: 'image/png' }),
-      };
-    }
-    return { ok: true, json: async () => ({}) };
-  });
-}
-
 describe('translateImage', () => {
   beforeEach(() => {
-    mockFileReader();
     mockDocument();
   });
 
-  it('should handle OCR blocks with short text (pass through)', { timeout: 10000 }, async () => {
+  it('should translate each OCR block through the background', async () => {
+    const sendMessage = mockBackground();
     const onProgress = vi.fn();
-
-    const mockFetch = vi.fn();
-    mockImageFetch(mockFetch);
-
-    globalThis.fetch = mockFetch;
-    globalThis.chrome = { runtime: { id: 'test', sendMessage: vi.fn() } } as any;
 
     await translateImage('https://example.com/img.png', DEFAULT_IMAGE_CONFIG, onProgress);
 
     expect(onProgress).toHaveBeenCalled();
+    // "Hi" is under the three-character floor and is passed through, so only
+    // the longer block costs a model call.
+    const translated = sendMessage.mock.calls.filter(
+      ([message]: [any]) => message.type === 'MASHA_TRANSLATE_TEXT',
+    );
+    expect(translated).toHaveLength(1);
+    expect(translated[0][0].text).toBe('Hello world');
   });
 
-  it('should handle missing bridge gracefully', { timeout: 10000 }, async () => {
-    const mockFetch = vi.fn();
-    // OCR check must come before generic http check
-    mockFetch.mockImplementation(async (url: string) => {
-      if (typeof url === 'string' && url.includes('/ocr')) {
-        return { ok: false, status: 503, statusText: 'Unavailable' };
-      }
-      if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
-        return {
-          ok: true,
-          blob: async () => new Blob(['fake-png'], { type: 'image/png' }),
-        };
-      }
-      return { ok: true, json: async () => ({}) };
+  it('should surface a bridge that has no OCR engine', async () => {
+    mockBackground({
+      MASHA_OCR: { success: false, error: 'The bridge has no OCR engine' },
     });
 
-    globalThis.fetch = mockFetch;
+    await expect(
+      translateImage('https://example.com/img.png', DEFAULT_IMAGE_CONFIG),
+    ).rejects.toThrow(/no OCR engine/);
+  });
 
-    try {
-      await translateImage('https://example.com/img.png', DEFAULT_IMAGE_CONFIG);
-      expect.fail('Should have thrown');
-    } catch (err) {
-      expect((err as Error).message).toContain('OCR failed');
-    }
+  it('should give up quietly when the image cannot be fetched', async () => {
+    const sendMessage = mockBackground({
+      MASHA_FETCH_IMAGE: { success: true, dataUrl: null },
+    });
+
+    await translateImage('https://example.com/img.png', DEFAULT_IMAGE_CONFIG);
+
+    // Nothing to OCR means nothing else is asked of the background.
+    expect(sendMessage.mock.calls.map(([m]: [any]) => m.type)).toEqual(['MASHA_FETCH_IMAGE']);
   });
 });

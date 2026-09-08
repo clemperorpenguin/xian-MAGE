@@ -3,11 +3,21 @@
  *
  * Bridge side.  Captures images from the page, sends them to the Xian bridge
  * for OCR, translates detected text, and renders via overlay or inpainting.
+ *
+ * Every network hop goes through the background worker. An MV3 content script
+ * has no cross-origin privileges of its own — a `fetch` from here is judged by
+ * the *page's* CORS policy, so calls to Lemonade and to the bridge would fail
+ * on most of the web.
  */
 
+/** One round trip to the background worker, unwrapped. */
+async function ask<T>(message: object, field: string): Promise<T> {
+  const response = await chrome.runtime.sendMessage(message);
+  if (!response?.success) throw new Error(response?.error || 'Background request failed');
+  return response[field] as T;
+}
+
 export interface ImageTranslateConfig {
-  /** Bridge base URL (e.g. http://127.0.0.1:13306). */
-  bridgeUrl: string;
   /** Mode: 'text' for standard images, 'comic' for manga/comics. */
   mode: 'text' | 'comic';
   /** Overlay mode (instant) vs render mode (inpaint). */
@@ -18,7 +28,6 @@ export interface ImageTranslateConfig {
 }
 
 export const DEFAULT_IMAGE_CONFIG: ImageTranslateConfig = {
-  bridgeUrl: 'http://127.0.0.1:13306',
   mode: 'text',
   overlay: true,
   sourceLang: 'Auto',
@@ -44,21 +53,18 @@ export async function translateImage(
   if (!imageData) return;
 
   // 2. OCR via bridge
-  const ocrResp = await fetch(`${config.bridgeUrl}/ocr`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  const ocrResult = await ask<{ blocks: Array<{ quad: any; text: string; confidence: number }> }>(
+    {
+      type: 'MASHA_OCR',
       image: imageData,
-      source_lang: config.sourceLang,
+      sourceLang: config.sourceLang,
       mode: config.mode,
-    }),
-  });
-
-  if (!ocrResp.ok) throw new Error(`OCR failed: ${ocrResp.status}`);
-  const ocrResult = await ocrResp.json();
+    },
+    'result',
+  );
 
   // 3. Translate block texts (batched through Lemonade)
-  const blocks = ocrResult.blocks as Array<{ quad: any; text: string; confidence: number }>;
+  const blocks = ocrResult.blocks;
   const translations: string[] = [];
 
   for (let i = 0; i < blocks.length; i++) {
@@ -79,48 +85,26 @@ export async function translateImage(
   if (config.overlay) {
     renderOverlay(imgSrc, blocks, translations);
   } else {
-    await renderInpaint(imgSrc, imageData, blocks, translations, config);
+    await renderInpaint(imgSrc, imageData, blocks, translations);
   }
 }
 
 async function fetchImageAsBase64(src: string): Promise<string | null> {
+  // The background holds the host permissions, so it fetches the bytes even
+  // when the image is served from a different origin than the page.
   try {
-    const resp = await fetch(src, { credentials: 'omit' });
-    const blob = await resp.blob();
-    const reader = new FileReader();
-    return new Promise<string>((resolve) => {
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.readAsDataURL(blob);
-    });
+    return await ask<string | null>({ type: 'MASHA_FETCH_IMAGE', src }, 'dataUrl');
   } catch {
-    // Cross-origin: ask background to fetch with host permissions
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: 'MASHA_FETCH_IMAGE', src },
-        (response) => resolve(response?.dataUrl || null),
-      );
-    });
+    return null;
   }
 }
 
 async function translateText(text: string, targetLang: string): Promise<string> {
-  // Reuse the existing Lemonade translation call
-  // (simplified: direct fetch to /v1/chat/completions)
-  const resp = await fetch('http://127.0.0.1:13305/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'Xian-Ultra',
-      messages: [
-        { role: 'system', content: `Translate to ${targetLang}.` },
-        { role: 'user', content: text },
-      ],
-      max_tokens: 512,
-      temperature: 0.3,
-    }),
-  });
-  const data = await resp.json();
-  return data.choices?.[0]?.message?.content || text;
+  try {
+    return await ask<string>({ type: 'MASHA_TRANSLATE_TEXT', text, targetLang }, 'translation');
+  } catch {
+    return text; // one unreadable balloon should not abandon the page
+  }
 }
 
 /**
@@ -200,25 +184,18 @@ async function renderInpaint(
   imageData: string,
   blocks: Array<{ quad: any; text: string }>,
   translations: string[],
-  config: ImageTranslateConfig,
 ): Promise<void> {
-  const renderResp = await fetch(`${config.bridgeUrl}/ocr/render`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  const rendered = await ask<string>(
+    {
+      type: 'MASHA_OCR_RENDER',
       image: imageData,
-      blocks: blocks.map((b, i) => ({
-        quad: b.quad,
-        translated: translations[i],
-      })),
-    }),
-  });
-
-  if (!renderResp.ok) throw new Error(`Render failed: ${renderResp.status}`);
-  const result = await renderResp.json();
+      blocks: blocks.map((b, i) => ({ quad: b.quad, translated: translations[i] })),
+    },
+    'image',
+  );
 
   // Swap image src with rendered version
   for (const img of imagesShowing(imgSrc)) {
-    img.src = result.image;
+    img.src = rendered;
   }
 }

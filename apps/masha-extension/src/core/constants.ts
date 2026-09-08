@@ -30,6 +30,21 @@
 export const DEFAULT_LEMONADE_URL = 'http://localhost:13305/v1';
 
 /**
+ * Default base URL of the local Xian bridge — the service that owns OCR,
+ * document jobs, the shared glossary and the shared cache
+ * (``packages/xian-bridge``, loopback only).
+ */
+export const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:13306';
+
+/**
+ * Whisper model for Lemonade's realtime transcription socket.
+ *
+ * The light end of ``xian.collections`` — audio subtitles run continuously
+ * beside a video, so the cheap recogniser is the right default.
+ */
+export const DEFAULT_ASR_MODEL = 'Whisper-Tiny';
+
+/**
  * Canonical default model. Mirror of shared_types ``DEFAULT_MODEL``.
  *
  * A Xian collection registered by MAGE (see ``xian.collections``). Masha does

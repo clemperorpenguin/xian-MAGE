@@ -7,8 +7,6 @@
  * Bridge side (DOM + messaging).  Core policy lives in core/nearestBlock.ts.
  */
 
-import { PlatformBridge } from '../../platform/bridge';
-
 export interface HoverConfig {
   mode: 'off' | 'hover' | 'shift' | 'alt' | 'ctrl';
   dwellMs: number;          // 300
@@ -28,7 +26,6 @@ export const DEFAULT_HOVER_CONFIG: HoverConfig = {
  * Returns an undo function that removes the listeners.
  */
 export function attachHover(
-  bridge: PlatformBridge,
   config: HoverConfig = DEFAULT_HOVER_CONFIG,
   render: HoverRenderer = showBubble,
 ): () => void {

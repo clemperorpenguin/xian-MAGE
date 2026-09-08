@@ -1,23 +1,22 @@
 /*
  * M4b — Audio subtitle path (basic).
  *
- * Captures audio from a <video> element, sends it to Lemonade's realtime ASR,
- * translates each finalised utterance, renders through the overlay.
+ * Captures a <video>'s audio, streams it to Lemonade's realtime transcription
+ * socket, translates each finalised utterance, renders through the overlay.
  *
- * Bridge side.  Audio capture uses Web Audio API.
+ * Bridge side. The wire protocol is Lemonade's `WS /realtime` (OpenAI Realtime
+ * shaped): connect with `?model=`, configure with `session.update`, send audio
+ * as base64 PCM16 at 16 kHz mono, and read transcripts off
+ * `conversation.item.input_audio_transcription.completed`. Those constraints
+ * come from the server, not from us — 16 kHz mono PCM16 is the only format it
+ * accepts.
  */
 
 import { SubtitlePolicy, DEFAULT_SUBTITLE_POLICY, shouldTranslateCue } from '../../../core/subtitles/cue';
 import { SubtitleOverlay, createOverlay } from './track';
 
-export interface AudioSession {
-  video: HTMLVideoElement;
-  stream: MediaStream | null;
-  source: MediaElementAudioSourceNode | MediaStreamAudioSourceNode | null;
-  processor: AudioWorkletNode | null;
-  ws: WebSocket | null;
-  overlay: SubtitleOverlay;
-}
+/** The rate Lemonade's recogniser accepts, and the only one it accepts. */
+const ASR_SAMPLE_RATE = 16000;
 
 /**
  * The audio graph built for a given <video>.
@@ -47,6 +46,55 @@ function tapFor(video: HTMLVideoElement): VideoTap {
   return tap;
 }
 
+/** `ws(s)://…/v1/realtime?model=…` from the Lemonade base URL. */
+export function realtimeUrl(serverUrl: string, model: string): string {
+  const url = new URL(serverUrl);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/realtime`;
+  url.searchParams.set('model', model);
+  return url.toString();
+}
+
+/**
+ * Resample one block of mono float samples down to 16 kHz.
+ *
+ * Averaging across each source window rather than picking one sample out of
+ * every N: plain decimation aliases, and aliased speech transcribes badly.
+ */
+export function downsampleTo16k(input: Float32Array, inputRate: number): Float32Array {
+  if (inputRate <= ASR_SAMPLE_RATE) return input;
+
+  const ratio = inputRate / ASR_SAMPLE_RATE;
+  const output = new Float32Array(Math.floor(input.length / ratio));
+
+  for (let i = 0; i < output.length; i++) {
+    const start = Math.floor(i * ratio);
+    const end = Math.min(Math.floor((i + 1) * ratio), input.length);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += input[j];
+    output[i] = end > start ? sum / (end - start) : 0;
+  }
+  return output;
+}
+
+/** Float samples in [-1, 1] as base64 little-endian PCM16. */
+export function encodePcm16(samples: Float32Array): string {
+  const buffer = new ArrayBuffer(samples.length * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(i * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+  }
+
+  const bytes = new Uint8Array(buffer);
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
 /**
  * Start audio capture + realtime translation for a video.
  *
@@ -60,35 +108,20 @@ function tapFor(video: HTMLVideoElement): VideoTap {
 export function attachAudioSubtitle(
   video: HTMLVideoElement,
   serverUrl: string,
-  sourceLang: string,
-  targetLang: string,
-  onTranslate: (text: string, targetLang: string) => Promise<string>,
+  asrModel: string,
+  onTranslate: (text: string) => Promise<string>,
   policy: SubtitlePolicy = DEFAULT_SUBTITLE_POLICY,
 ): () => void {
   const overlay = createOverlay(video);
-  const session: AudioSession = { video, stream: null, source: null, processor: null, ws: null, overlay };
 
-  // 1. Capture audio from the video element, leaving playback audible
+  // 1. Tap the video's audio without taking it off the speakers
   const { ctx, source } = tapFor(video);
-  const dest = ctx.createMediaStreamDestination();
-  source.connect(dest);
-  session.source = source;
-  session.stream = dest.stream;
 
-  // 2. Open WebSocket to Lemonade's realtime endpoint
-  const wsUrl = serverUrl.replace('/v1', '/realtime');
-  const ws = new WebSocket(wsUrl);
-  session.ws = ws;
+  // 2. Open the transcription socket
+  const ws = new WebSocket(realtimeUrl(serverUrl, asrModel));
 
   ws.onopen = () => {
-    // Configure ASR. `language` is what is being *spoken*, not what we
-    // translate into, and the format has to describe what step 3 actually
-    // puts on the wire.
-    ws.send(JSON.stringify({
-      type: 'configure',
-      audio: { format: 'webm-opus', sample_rate: ctx.sampleRate, channels: 1 },
-      language: sourceLang,
-    }));
+    ws.send(JSON.stringify({ type: 'session.update', session: { model: asrModel } }));
   };
 
   // Utterances are translated concurrently; only the newest may paint.
@@ -98,16 +131,16 @@ export function attachAudioSubtitle(
   ws.onmessage = (evt) => {
     try {
       const msg = JSON.parse(evt.data);
-      if (msg.type !== 'transcript' || !msg.final) return;
+      if (msg.type !== 'conversation.item.input_audio_transcription.completed') return;
 
-      const text = msg.text || '';
+      const text = msg.transcript || '';
       if (!shouldTranslateCue(text, policy)) {
         overlay.render(text); // non-speech: pass through untranslated
         return;
       }
 
       const seq = ++issued;
-      onTranslate(text, targetLang)
+      onTranslate(text)
         .then(translated => {
           if (seq < rendered) return; // a later utterance already painted
           rendered = seq;
@@ -125,24 +158,37 @@ export function attachAudioSubtitle(
     overlay.render('[audio error]');
   };
 
-  // 3. Pipe audio data through the WebSocket
-  // (Simplified: MediaStream → MediaRecorder → WS for this basic version)
-  const recorder = new MediaRecorder(dest.stream, {
-    mimeType: 'audio/webm;codecs=opus',
-  });
-  recorder.ondataavailable = (blobEvt) => {
-    if (blobEvt.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-      ws.send(blobEvt.data);
-    }
+  // 3. Feed the socket. A ScriptProcessor rather than an AudioWorklet: a
+  // worklet module has to be fetched from a web-accessible URL, which is a
+  // manifest change for a node this small.
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = (event) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const samples = downsampleTo16k(event.inputBuffer.getChannelData(0), ctx.sampleRate);
+    if (samples.length === 0) return;
+    ws.send(JSON.stringify({
+      type: 'input_audio_buffer.append',
+      audio: encodePcm16(samples),
+    }));
   };
-  recorder.start(200); // chunk every 200ms
+
+  // A ScriptProcessor only runs while it is connected to a destination, so it
+  // ends at a muted gain node rather than at the speakers — the audible path
+  // is the source's own connection, made once in tapFor.
+  const mute = ctx.createGain();
+  mute.gain.value = 0;
+  source.connect(processor);
+  processor.connect(mute);
+  mute.connect(ctx.destination);
 
   return () => {
-    if (recorder.state !== 'inactive') recorder.stop();
+    processor.onaudioprocess = null;
+    source.disconnect(processor);
+    processor.disconnect();
+    mute.disconnect();
     ws.close();
-    // Drop only the capture branch. Closing the context, or disconnecting the
-    // source outright, would leave the element permanently silent.
-    source.disconnect(dest);
+    // Neither the context nor the source is torn down: closing the context
+    // would leave the element permanently silent.
     overlay.container.remove();
   };
 }
