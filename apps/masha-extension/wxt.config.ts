@@ -28,7 +28,7 @@ export default defineConfig({
     name: "MASHA Translate",
     description: "Multilingual Access & Site Handling Assistant",
     version: "1.0.0",
-    permissions: ["storage", "contextMenus"],
+    permissions: ["storage", "contextMenus", "activeTab", "scripting", "webNavigation"],
     host_permissions: ["<all_urls>"],
     // Firefox refuses to install an unsigned MV3 extension without an explicit id.
     browser_specific_settings: {

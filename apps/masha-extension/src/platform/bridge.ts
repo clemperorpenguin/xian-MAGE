@@ -34,6 +34,8 @@ export interface MashaConfig {
   /** ``"Auto"`` or an explicit source language name. */
   sourceLang: string;
   targetLang: string;
+  /** The model to use for translation (default Xian-Ultra). */
+  model?: string;
   /** Optional stylistic register terms. */
   styles: string[];
 }
@@ -42,6 +44,7 @@ export const DEFAULT_CONFIG: MashaConfig = {
   serverUrl: DEFAULT_LEMONADE_URL,
   sourceLang: DEFAULT_SOURCE_LANG,
   targetLang: DEFAULT_TARGET_LANG,
+  model: undefined,
   styles: [],
 };
 
@@ -60,6 +63,14 @@ export interface TranslationOutcome {
   translation: string;
   /** Editable selections are replaced in place; others use the overlay. */
   isEditable: boolean;
+}
+
+/** Outcome for a page-level translation (bilingual page mode). */
+export interface PageTranslationOutcome {
+  /** Total segments translated. */
+  segmentCount: number;
+  /** Number of segments that succeeded. */
+  successCount: number;
 }
 
 /**
@@ -84,4 +95,18 @@ export interface PlatformBridge {
 
   /** Replace the selection in place (editable inputs only). */
   replaceSelection(text: string): void;
+
+  // --- M1: Bilingual pages ---
+
+  /** Walk the live DOM and return a serialisable node tree + text table. */
+  getPageTree(): Promise<{ root: any; nodeTable: Map<number, string> }>;
+
+  /**
+   * Translate the current page and inject bilingual <masha-tr> elements.
+   * Returns after all segments have been processed.
+   */
+  translatePage(config: MashaConfig): Promise<PageTranslationOutcome>;
+
+  /** Remove all injected translations and restore original DOM. */
+  undoPageTranslation(): Promise<void>;
 }
