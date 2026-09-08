@@ -1,42 +1,83 @@
 /*
- * Masha — Browser extension selection translator.
- * Copyright (C) 2026  Clementine Pendragon <clem@pendragon.systems>
+ * Background service worker (WXT).
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- *
- * Contact: clem@pendragon.systems (Clementine Pendragon, c/o Xian Project Development)
+ * Owns the platform pieces that must live off the page: the context-menu
+ * trigger, the Lemonade HTTP call, bridge communication, and cross-origin
+ * image fetching.
  */
 
-/*
- * Background service worker (WXT). Owns the platform pieces that must live off
- * the page: the context-menu trigger and the Lemonade HTTP call. Routing the
- * fetch through here (not the content script) is what lets it reach a local
- * http:// Lemonade node from an https:// page without mixed-content blocking —
- * the same reason it works in Firefox as well as Chrome.
- */
-
-import { getConfig } from '../utils/config';
+import { getConfig, setConfig } from '../utils/config';
 import { translate } from '../core/translator';
-import { SelectionContext } from '../platform/bridge';
+import { SelectionContext, MashaConfig, PageTranslationOutcome } from '../platform/bridge';
+import { normalizeLemonadeBaseUrl } from '../utils/lemonadeUrl';
 
 const MENU_ID = 'masha-translate';
 
-/** Fired by the content script: a captured selection to translate. */
+// Bridge base URL (configurable)
+const BRIDGE_URL = 'http://127.0.0.1:13306';
+
+// --- Message types ---
 interface TranslateMessage {
   type: 'MASHA_TRANSLATE';
   payload: SelectionContext;
 }
+
+interface HoverMessage {
+  type: 'MASHA_HOVER_TRANSLATE';
+  nodeId: string;
+  text: string;
+}
+
+interface FetchImageMessage {
+  type: 'MASHA_FETCH_IMAGE';
+  src: string;
+}
+
+interface DocumentJobMessage {
+  type: 'MASHA_DOCUMENT_JOB';
+  filename: string;
+  data: ArrayBuffer;
+  sourceLang: string;
+  targetLang: string;
+}
+
+interface DocumentPollMessage {
+  type: 'MASHA_DOCUMENT_POLL';
+  jobId: string;
+}
+
+interface GlossaryGetMessage {
+  type: 'MASHA_GLOSSARY_GET';
+}
+
+interface GlossarySetMessage {
+  type: 'MASHA_GLOSSARY_SET';
+  source: string;
+  target: string;
+}
+
+interface CacheLookupMessage {
+  type: 'MASHA_CACHE_LOOKUP';
+  sourceText: string;
+  sourceLang: string;
+  targetLang: string;
+}
+
+interface CacheStoreMessage {
+  type: 'MASHA_CACHE_STORE';
+  entries: Array<{ sourceText: string; sourceLang: string; targetLang: string; translated: string }>;
+}
+
+type BridgeMessage =
+  | TranslateMessage
+  | HoverMessage
+  | FetchImageMessage
+  | DocumentJobMessage
+  | DocumentPollMessage
+  | GlossaryGetMessage
+  | GlossarySetMessage
+  | CacheLookupMessage
+  | CacheStoreMessage;
 
 async function handleTranslate(payload: SelectionContext): Promise<string> {
   const config = await getConfig();
@@ -49,8 +90,103 @@ async function handleTranslate(payload: SelectionContext): Promise<string> {
   });
 }
 
+async function handleHoverTranslate(text: string): Promise<string> {
+  const config = await getConfig();
+  return translate(fetch as any, config, {
+    selection: text,
+    context: '',
+    sourceLang: config.sourceLang,
+    targetLang: config.targetLang,
+    styles: config.styles,
+  });
+}
+
+async function handleFetchImage(src: string): Promise<string | null> {
+  try {
+    const resp = await fetch(src);
+    const blob = await resp.blob();
+    const reader = new FileReader();
+    return await new Promise<string>((resolve) => {
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function handleDocumentJob(
+  filename: string,
+  data: ArrayBuffer,
+  sourceLang: string,
+  targetLang: string,
+): Promise<string> {
+  const blob = new Blob([data]);
+  const form = new FormData();
+  form.append('file', blob, filename);
+  form.append('source_lang', sourceLang);
+  form.append('target_lang', targetLang);
+  form.append('bilingual', 'true');
+
+  const resp = await fetch(`${BRIDGE_URL}/documents`, {
+    method: 'POST',
+    body: form,
+  });
+  const result = await resp.json();
+  return result.job_id;
+}
+
+async function handleDocumentPoll(jobId: string): Promise<{ status: string; progress: number }> {
+  const resp = await fetch(`${BRIDGE_URL}/documents/${jobId}`);
+  const result = await resp.json();
+  return { status: result.status, progress: result.progress };
+}
+
+async function handleGlossaryGet(): Promise<Record<string, string>> {
+  const resp = await fetch(`${BRIDGE_URL}/glossary`);
+  const result = await resp.json();
+  return result.terms || {};
+}
+
+async function handleGlossarySet(source: string, target: string): Promise<void> {
+  await fetch(`${BRIDGE_URL}/glossary`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source, target }),
+  });
+}
+
+async function handleCacheLookup(
+  sourceText: string,
+  sourceLang: string,
+  targetLang: string,
+): Promise<string | null> {
+  const params = new URLSearchParams({ source_text: sourceText, source_lang: sourceLang, target_lang: targetLang });
+  const resp = await fetch(`${BRIDGE_URL}/cache?${params}`);
+  const result = await resp.json();
+  return result.found ? result.translated : null;
+}
+
+async function handleCacheStore(
+  entries: Array<{ sourceText: string; sourceLang: string; targetLang: string; translated: string }>,
+): Promise<void> {
+  await fetch(`${BRIDGE_URL}/cache`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      entries: entries.map(e => ({
+        source_text: e.sourceText,
+        source_lang: e.sourceLang,
+        target_lang: e.targetLang,
+        translated: e.translated,
+        epoch: 0,
+      })),
+    }),
+  });
+}
+
 export default defineBackground(() => {
-  // Register the right-click trigger (shown only when text is selected).
+  // Register the right-click trigger
   chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.removeAll(() => {
       chrome.contextMenus.create({
@@ -61,26 +197,97 @@ export default defineBackground(() => {
     });
   });
 
-  // Context-menu click → ask the page's content script to capture + render.
+  // Context-menu click → ask the page's content script
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId !== MENU_ID || !tab?.id) return;
-    chrome.tabs.sendMessage(tab.id, { type: 'MASHA_TRIGGER' }).catch(() => {
-      // No content script (e.g. chrome:// page or not yet injected) — ignore.
-    });
+    chrome.tabs.sendMessage(tab.id, { type: 'MASHA_TRIGGER' }).catch(() => {});
   });
 
-  // Content script asks us to run the model call.
+  // All runtime messages
   chrome.runtime.onMessage.addListener(
-    (message: TranslateMessage, sender, sendResponse) => {
+    (message: BridgeMessage, sender, sendResponse) => {
       if (sender.id !== chrome.runtime.id) {
         sendResponse({ success: false, error: 'Invalid sender' });
         return;
       }
-      if (message.type === 'MASHA_TRANSLATE') {
-        handleTranslate(message.payload)
-          .then((translation) => sendResponse({ success: true, translation }))
-          .catch((error) => sendResponse({ success: false, error: String(error?.message || error) }));
-        return true; // async response
+
+      try {
+        switch (message.type) {
+          case 'MASHA_TRANSLATE': {
+            handleTranslate((message as TranslateMessage).payload)
+              .then((translation) => sendResponse({ success: true, translation }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          case 'MASHA_HOVER_TRANSLATE': {
+            const msg = message as HoverMessage;
+            handleHoverTranslate(msg.text)
+              .then((translation) => sendResponse({ success: true, translation }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          case 'MASHA_FETCH_IMAGE': {
+            const msg = message as FetchImageMessage;
+            handleFetchImage(msg.src)
+              .then((dataUrl) => sendResponse({ success: true, dataUrl }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          case 'MASHA_DOCUMENT_JOB': {
+            const msg = message as DocumentJobMessage;
+            handleDocumentJob(msg.filename, msg.data, msg.sourceLang, msg.targetLang)
+              .then((jobId) => sendResponse({ success: true, jobId }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          case 'MASHA_DOCUMENT_POLL': {
+            const msg = message as DocumentPollMessage;
+            handleDocumentPoll(msg.jobId)
+              .then((status) => sendResponse({ success: true, ...status }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          case 'MASHA_GLOSSARY_GET': {
+            handleGlossaryGet()
+              .then((terms) => sendResponse({ success: true, terms }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          case 'MASHA_GLOSSARY_SET': {
+            const msg = message as GlossarySetMessage;
+            handleGlossarySet(msg.source, msg.target)
+              .then(() => sendResponse({ success: true }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          case 'MASHA_CACHE_LOOKUP': {
+            const msg = message as CacheLookupMessage;
+            handleCacheLookup(msg.sourceText, msg.sourceLang, msg.targetLang)
+              .then((translated) => sendResponse({ success: true, translated }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          case 'MASHA_CACHE_STORE': {
+            const msg = message as CacheStoreMessage;
+            handleCacheStore(msg.entries)
+              .then(() => sendResponse({ success: true }))
+              .catch((error) => sendResponse({ success: false, error: String(error) }));
+            return true;
+          }
+
+          default:
+            sendResponse({ success: false, error: 'Unknown message type' });
+        }
+      } catch (error) {
+        sendResponse({ success: false, error: String(error) });
       }
     },
   );

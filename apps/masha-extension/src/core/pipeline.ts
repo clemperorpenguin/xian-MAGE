@@ -39,6 +39,10 @@ export interface PageTranslateOptions {
   segments: Segment[];
   config: MashaConfig;
   glossary?: Record<string, string>;
+  /** Page-level context (title + opening paragraph) for disambiguation. */
+  pageContext?: string;
+  /** Domain expertise string (e.g. "medicine", "law"). */
+  expertise?: string;
   /** Maximum concurrent requests (default 4). */
   concurrency?: number;
   /** Target payload size per batch in characters (default 1500). */
@@ -174,11 +178,12 @@ export async function translatePage(
     // Build the prompt for this batch
     const messages = buildBatchTranslationMessages({
       selection: batch.body,
-      context: '', // Page context could be added here
+      context: opts.pageContext || '',
       sourceLang: opts.config.sourceLang,
       targetLang: opts.config.targetLang,
       styles: opts.config.styles,
       glossary: opts.glossary,
+      expertise: opts.expertise,
     });
 
     const payload = {

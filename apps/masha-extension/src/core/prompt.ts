@@ -49,6 +49,8 @@ export interface PromptOptions {
   styles?: string[];
   /** Source term → required translation. Enforced in the prompt. */
   glossary?: Record<string, string>;
+  /** Domain expertise string injected into the system role (e.g. "medicine"). */
+  expertise?: string;
 }
 
 /** Wrap a segment id in the marker the batch protocol keys on. */
@@ -76,6 +78,11 @@ function commonRules(opts: PromptOptions, hasGlossary: boolean): string {
       ? ` Optionally use ${opts.styles.join(', ')} terms if it does not compromise accuracy.`
       : '';
 
+  const expertiseContext =
+    opts.expertise
+      ? ` You are an expert in ${opts.expertise}. Use the correct domain-specific terminology and conventions.`
+      : '';
+
   return (
     `- Produce a direct, faithful translation that preserves the original tone, register, and inline formatting.\n` +
     `- Use the PAGE CONTEXT ONLY as reference to disambiguate meaning, pronouns, gender, honorifics, and terminology. ` +
@@ -83,7 +90,7 @@ function commonRules(opts: PromptOptions, hasGlossary: boolean): string {
     (hasGlossary
       ? `- The GLOSSARY is binding: render each listed term exactly as given, inflected to fit the sentence.\n`
       : '') +
-    `- If the text is already in ${opts.targetLang}, return it unchanged.${styleContext}\n` +
+    `- If the text is already in ${opts.targetLang}, return it unchanged.${styleContext}${expertiseContext}\n` +
     `- Keep any reasoning extremely brief; do not narrate your process.`
   );
 }

@@ -109,4 +109,48 @@ export interface PlatformBridge {
 
   /** Remove all injected translations and restore original DOM. */
   undoPageTranslation(): Promise<void>;
+
+  // --- M2: Hover + Compose ---
+
+  /** Attach hover-to-translate listeners (passive, throttled). */
+  attachHover(config?: { mode: string; dwellMs: number }): Promise<() => void>;
+  /** Attach compose trigger (triple-space). */
+  attachCompose(config?: { enabled: boolean; targetLang: string }): Promise<() => void>;
+
+  // --- M3: Site profiles ---
+
+  /** Get the matching site profile for the current URL, or null. */
+  getSiteProfile(): Promise<{ profile: any | null }>;
+
+  // --- M4: Subtitles ---
+
+  /** Attach subtitle translation to video elements with text tracks. */
+  attachTrackSubtitles(): Promise<() => void>;
+  /** Attach audio-capture subtitle translation (basic, opt-in). */
+  attachAudioSubtitles(serverUrl: string, targetLang: string): Promise<() => void>;
+
+  // --- M5: Images + Comics ---
+
+  /** Translate text in a single image via OCR + LLM. */
+  translateImage(imgSrc: string, mode: 'text' | 'comic'): Promise<void>;
+  /** Attach comic reader (scroll-triggered image translation). */
+  attachComicReader(): Promise<() => void>;
+
+  // --- M6: Documents ---
+
+  /** Start a document translation job. */
+  startDocumentJob(file: Blob, filename: string): Promise<{ jobId: string }>;
+  /** Poll a document job's status. */
+  getDocumentStatus(jobId: string): Promise<{ status: string; progress: number }>;
+
+  // --- M7: Glossary + Cache ---
+
+  /** Load the shared glossary (from bridge + user overrides). */
+  getGlossary(): Promise<Record<string, string>>;
+  /** Add or update a glossary entry. */
+  setGlossaryEntry(source: string, target: string): Promise<void>;
+  /** Look up a translation in the shared cache. */
+  cacheLookup(sourceText: string, sourceLang: string, targetLang: string): Promise<string | null>;
+  /** Store translations in the shared cache. */
+  cacheStore(entries: Array<{ sourceText: string; translated: string }>): Promise<void>;
 }
