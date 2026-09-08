@@ -40,6 +40,57 @@ catch on a GUI/Wayland/audio app. Copy this into an issue per release and tick b
       primary (non-zero virtual-desktop origin), draw a selection — the box stays put
       (doesn't drift across repaints) and translation crops the region you selected.
 
+## 3b. Live engines (2×2 — do not skip a cell)
+
+There are two live engines and two UI shells, which is four combinations.  Only one of
+them is anybody's daily driver, and a regression in the other three is exactly the kind
+that ships.
+
+|  | Classic UI | New UI |
+|---|---|---|
+| **Vision model** | the shipped default — regress nothing here | boxes drive the vision engine |
+| **Local OCR** | new engine, old surface | new engine, new surface |
+
+Run §3's items in each cell, then these:
+
+- [ ] 🟢 Settings → Features → **Live engine → Local OCR**, restart live mode; text is
+      read and painted with no vision model loaded on the server.
+- [ ] 🟢 First run with no exported models gives an actionable message naming
+      `scripts/export_ppocr_onnx.py`, not a crash.
+- [ ] 🟢 With Hy-MT2 not installed, the error names the model — it must **not** quietly
+      fall back to the chat model.
+- [ ] 🟢 A static dialogue screen does not re-translate: watch for 30 s, the overlay text
+      never shimmers or changes wording.
+- [ ] 🟢 An animated background (particles, a scrolling combat log) over unchanged
+      dialogue does not re-translate either. **This is the whole point of the engine.**
+- [ ] 🟢 Advancing dialogue is picked up within one tick.
+- [ ] 🟢 Re-opening a menu paints instantly — from the cache, with no request.
+- [ ] 🟡 Ignore phrases: add the HUD clock's text; it stops firing the gate.
+- [ ] 🟡 Detector → **Accurate**: smaller text is found, at a visibly higher per-frame cost.
+- [ ] 🟡 Source language → Korean or Russian: the matching recognizer loads and reads.
+- [ ] 🟡 Vertical (tategaki) Japanese text reads right-to-left in the correct column order.
+
+## 3c. The new UI
+
+- [ ] 🟢 Settings → Features → **Use the new interface**, restart; the orb appears and the
+      command OSD does not.
+- [ ] 🟢 Double-tapping the leader key does **nothing**. Double-tapping the overlay-toggle
+      key still hides every overlay — including from inside a fullscreen game.
+- [ ] 🟢 Orb → **Add box**, drag a rectangle; it persists across a restart, in the right
+      place, in the right mode.
+- [ ] 🟢 Drag a box somewhere else; it reads the new area and remembers the new position.
+- [ ] 🟢 Box modes: Live ticks, Once translates on double-click and holds, Off does
+      nothing, Ignore is masked out of the other boxes.
+- [ ] 🟢 An **Ignore** box over an animated minimap stops it firing the other boxes' gates.
+- [ ] 🟢 Five boxes is the cap, and five live boxes do not stutter the compositor.
+- [ ] 🟢 Orb log fills with every translation, source above target.
+- [ ] 🟢 Orb chat answers a question about a line already in the log.
+- [ ] 🟡 Double-click the orb → it listens; speech is transcribed and translated into the
+      log, and double-clicking again stops it.
+- [ ] 🟢 The familiar is **not** on screen under the new UI.
+- [ ] 🟢 Switch back to the classic UI and restart: tray, OSD, hotkeys and familiar are all
+      exactly as they were.
+
 ## 4. Dialogue mode
 - [ ] 🟢 Lock a region; clicking advances/refreshes the translation inline.
 - [ ] 🟡 ⏱️ Leave it running through 50+ advances — no leak, no slowdown, no zombie overlays.

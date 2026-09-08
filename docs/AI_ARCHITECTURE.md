@@ -181,6 +181,64 @@ CONFIDENCE:
 ```
 The client parses this structure using high-performance regular expressions. A semi-transparent `ResultBubble` widget is overlayed near the user's selected region (`anchor_rect`) using global desktop coordinates. If the model confidence falls below a set threshold, the UI highlights the border in orange to warn the user of speculative translations.
 
+### 6. The Second Payload: Local OCR, Then Text-Only Translation
+
+Live mode can run a second lifecycle entirely, chosen in **Settings → Features → Live
+engine**.  The vision model does not see the frame at all: PP-OCRv5 reads it on this
+machine, and only the recognized text crosses the wire.
+
+```mermaid
+sequenceDiagram
+    participant UI as PyQt6 UI (Main Thread)
+    participant Worker as LiveOcrWorker (QThread)
+    participant Engine as AsyncEngine (Background Thread)
+    participant OCR as PaddleOcrEngine (ONNX Runtime, worker thread)
+    participant Lem as Lemonade Server :13305
+
+    UI->>Worker: Region locked, tick every 700ms
+    activate Worker
+    Worker->>Worker: Capture, mask Ignore boxes and own overlay
+    Worker->>Worker: Perceptual-hash pre-gate
+    Note over Worker: unchanged pixels -> sleep, no work at all
+    Worker->>Engine: Submit async coroutine
+    activate Engine
+    Engine->>OCR: asyncio.to_thread(read)
+    activate OCR
+    OCR->>OCR: OpenCV enhance, DBNet detect, DB contour postprocess
+    OCR->>OCR: Perspective-rectify each quad, batched CTC recognition
+    OCR-->>Engine: list[Line] with quads and confidences
+    deactivate OCR
+    Engine->>Engine: Confidence floor, ignore phrases, docTR/EasyOCR grouping
+    Engine->>Engine: Content hash, fuzzy similarity, settle window
+    Note over Engine: unchanged *text* -> keep the carry, no request
+    Engine->>Engine: Translation cache lookup
+    Engine->>Lem: POST /v1/chat/completions per uncached line (Hy-MT2-1.8B)
+    activate Lem
+    Lem-->>Engine: Translations
+    deactivate Lem
+    Engine-->>Worker: TextRegion list
+    deactivate Engine
+    Worker-->>UI: Signal: regions_ready (same signal as the vision path)
+    deactivate Worker
+    UI->>UI: InpaintOverlay paints in place
+```
+
+Three things are worth drawing out:
+
+* **The gate is on text, not pixels.**  The perceptual hash is kept as a cheap pre-filter,
+  but the decision that matters happens after reading.  A frame whose pixels moved and
+  whose dialogue did not costs one local read and no inference.
+
+* **The overlay does not know which engine produced it.**  Both workers derive from
+  `mage.live_common.LiveWorkerBase` and emit the same `regions_ready` signal, so the
+  painting, the carry, the own-overlay masking and the session recorder are shared.
+
+* **Hy-MT2 gets no system prompt.**  It is a machine-translation model and translates
+  instructions rather than following them, so the glossary is applied deterministically to
+  the output and the session digest is not sent at all.  That is a real capability
+  difference between the two engines, not an implementation detail: the vision path can
+  resolve a pronoun from the previous line and this one cannot.
+
 ---
 
 ## 5. Luduan: The Document Translation & Narration Pipeline
