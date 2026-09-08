@@ -123,9 +123,11 @@ whole documents, every frame of a subtitle track.
 - A running [Lemonade Server] (default `http://localhost:13305/v1`).
 - A translation model. MASHA defaults to the `Xian-Ultra` collection that MAGE
   registers; if it is not installed, pick any model in the popup.
-- 📋 For images, comics and documents: the local Xian bridge, which exposes the
-  OCR and document pipelines that live in `packages/xian-vl` and Luduan. It
-  translates through the same Lemonade server.
+- 📋 For images, comics and documents: **MAGE running**. The OCR and document
+  pipelines live in `packages/xian-vl` and Luduan, and MAGE starts the small
+  local bridge that exposes them — so there is one thing to install rather than
+  two. Everything else (pages, hover, compose, selections, subtitles) needs only
+  Lemonade.
 
 ## Browser support
 

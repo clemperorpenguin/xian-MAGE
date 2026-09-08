@@ -95,15 +95,27 @@ packages/xian-bridge/
 | `POST /documents/{id}/pause\|resume\|cancel` | — | `{status}` |
 | `GET /glossary` | — | `{terms: {source: target}}` |
 
-Three things about it:
+Four things about it:
 
 - **It binds to loopback only, and its CORS allowlist is extension origins.**
   A service that can OCR arbitrary images and is reachable from any page is a
   data-exfiltration primitive; it is not one that answers `Origin: https://…`.
 - **It translates through Lemonade**, not itself. One hub is the whole point.
-- **It is optional.** MASHA detects it at startup (`GET /health`, 300 ms
-  timeout) and hides the features that need it when it is absent, rather than
-  offering a button that fails.
+- **It ships with MAGE and is started by MAGE** (decision D1), on the model
+  `mage/lemond_manager.py` already uses for the Lemonade server: MAGE owns the
+  process, starts it on launch, stops it on quit. `mage-client` takes
+  `xian-bridge` as a dependency and gains a setting to disable it for users who
+  never open a browser.
+
+  The cost is stated plainly: **MASHA's image, comic and document features
+  require MAGE to be running.** Everything else — selections, bilingual pages,
+  hover, compose, subtitles — needs only Lemonade, and those are the features
+  most people use most of the time. The alternative, a second thing to install
+  and keep updated, buys independence for the minority of MASHA users who never
+  touch MAGE, at the price of an install step for everyone.
+- **It is optional at runtime.** MASHA probes `GET /health` (300 ms timeout) at
+  startup and on each popup open, and hides the features that need it when it
+  is absent — rather than offering a button that fails.
 
 ### 1.3 Where the work runs
 
@@ -274,15 +286,47 @@ export async function translatePage(fetchFn: FetchFn, opts: PageTranslateOptions
 `core/cache.ts` — a port of the LRU in `packages/xian-vl/src/xian/translation_cache.py`,
 keyed identically on `(text, sourceLang, targetLang)`.
 
-Two tiers:
-- **In-memory**, per tab, for the current page.
-- **`chrome.storage.local`**, bounded to ~5 MB with LRU eviction, so revisiting
-  an article or paging through a forum thread is free.
+Three tiers:
+
+1. **In-memory**, per tab, for the current page.
+2. **`chrome.storage.local`**, bounded to ~5 MB with LRU eviction, so
+   revisiting an article or paging through a forum thread is free with no
+   round trip at all.
+3. **Shared with MAGE** (decision D4), through the bridge. A term translated
+   in a game and on the wiki page about that game is the same term, and it
+   should be translated once.
+
+The shared tier is a new `translations` table in the SQLite database
+`xian.session_store.SessionStore` already owns — the same file, not the same
+table. It reuses that module's connection handling and background writer, and
+adds:
+
+```sql
+CREATE TABLE IF NOT EXISTS translations (
+  source_text  TEXT NOT NULL,
+  source_lang  TEXT NOT NULL,
+  target_lang  TEXT NOT NULL,
+  translated   TEXT NOT NULL,
+  epoch        INTEGER NOT NULL,   -- style/glossary version, see below
+  hits         INTEGER NOT NULL DEFAULT 0,
+  updated_at   REAL NOT NULL,
+  PRIMARY KEY (source_text, source_lang, target_lang)
+);
+```
+
+Exposed as `GET /cache?...` and `POST /cache` on the bridge, batched — one
+request per translation batch, not per segment.
+
+**Its retention is not the session store's.** `SessionStore` purges events
+after `retention_days` (default 30) because a play history goes stale; a
+translation does not. The `translations` table is bounded by row count with
+LRU eviction on `updated_at`, and `purge_older_than` must not touch it. Getting
+this wrong would quietly throw away a cache that took months to warm.
 
 The key deliberately excludes style and glossary, and the store is *versioned*
-by them instead: changing either bumps a `cacheEpoch` that invalidates
-everything. Keying on them would multiply the cache; versioning gets the same
-correctness for one integer.
+by them instead: changing either bumps `epoch`, and rows from an older epoch are
+ignored and lazily evicted. Keying on them would multiply the cache; versioning
+gets the same correctness for one integer.
 
 ### 2.6 Dynamic pages
 
@@ -434,22 +478,48 @@ Two shapes: a video with a subtitle track, and a video without one.
   original stays where the site drew it, the translation goes beneath.
 - Cue-level cache keyed on cue text; a rewatched or looping section costs nothing.
 
-### 5.2 Audio path (fallback)
+### 5.2 Audio path (fallback) — basic first, expandable
 
 `entrypoints/content/subtitles/audio.ts`
 
+Built deliberately small (decision D5). Lemonade's realtime transcription has
+not been exercised at length by anything in this repository, and the honest
+estimate for the full version is the least certain number in this document. So
+M4b ships the smallest thing that works, with the seams for the rest already
+in place, and the shape is revisited once there is real usage behind it.
+
+**In the first version:**
+
 - Capture with `MediaElementAudioSourceNode` → `AudioWorklet` → 16 kHz mono PCM.
-- Stream to Lemonade's `WS /realtime` (port from `GET /v1/health`'s
-  `websocket_port`), translate each finalised utterance, render like the track path.
-- **Only on explicit opt-in per site.** Capturing page audio silently is not
-  something an extension should ever do.
+- One WebSocket to Lemonade's `WS /realtime` (port from `GET /v1/health`'s
+  `websocket_port`), one video at a time.
+- Translate each *finalised* utterance only — no partial-hypothesis rendering,
+  which flickers and is the part most likely to need redesign.
+- Render through the same overlay the track path uses.
+- **Explicit opt-in per site.** Capturing page audio silently is not something
+  an extension should ever do, at any stage.
 
-### 5.3 Meetings
+**Deliberately not in the first version**, each behind a named seam so adding
+it is not a rewrite:
 
-The same audio path, with two differences: the overlay is a running transcript
-panel rather than two lines over a video, and speaker changes break the
-transcript into turns (from the meeting DOM where the site exposes an active
-speaker, otherwise by silence gap).
+| Later | Seam it plugs into |
+|---|---|
+| Partial hypotheses, updated in place | `CueSink.update(id, text)` — the overlay already keys cues by id |
+| Speaker turns / diarisation | `Utterance.speaker?: string`, unset in v1 |
+| More than one media element at once | `AudioSession` is already per-element, with a registry holding exactly one |
+| Reconnect and backpressure policy | `RealtimeClient` owns the socket; v1 reconnects three times and then gives up loudly |
+
+### 5.3 Meetings — after the audio path has been used
+
+Same machinery, deferred until §5.2 has real mileage. The differences when it
+comes: the overlay is a running transcript panel rather than two lines over a
+video, and speaker changes break the transcript into turns — from the meeting
+DOM where the site exposes an active speaker, otherwise by silence gap, which
+is what `Utterance.speaker` is reserved for.
+
+Building this before the basic path has been used in anger would mean designing
+the transcript UI around a transcription stream whose real behaviour — latency,
+stability, how often it revises itself — nobody has measured yet.
 
 ### 5.4 Files and tests
 
@@ -484,17 +554,32 @@ re-encode the user's image.
 
 ### 6.2 Comics
 
-`mode: "comic"` on the bridge changes the grouping, not the reading:
+`mode: "comic"` on the bridge changes the grouping, not the reading. **The
+grouping itself lives in `xian.ocr`** (decision D3), not in the bridge and not
+in MASHA — a new `packages/xian-vl/src/xian/ocr/comics.py` beside the existing
+`grouping.py`, which already owns tategaki detection and the median-height
+merge radius:
 
-- Speech balloons are found as connected light regions with dark text, and each
-  balloon is one translation unit — a bubble split across three detector boxes
-  is one sentence, and translating the three separately produces three
-  fragments.
+```python
+def find_balloons(image: np.ndarray, lines: list[Line]) -> list[Balloon]
+def order_panels(balloons: list[Balloon], *, rtl: bool) -> list[Balloon]
+def group_comic(image, lines, *, rtl: bool) -> list[Block]
+```
+
+- Speech balloons are found as connected light regions containing dark text,
+  and each balloon is one translation unit — a bubble split across three
+  detector boxes is one sentence, and translating the three separately produces
+  three fragments.
 - Panel order is right-to-left, top-to-bottom for manga; left-to-right for
-  webtoons and Western comics; taken from a per-site profile with a manual
-  override, because guessing wrong reverses the story.
-- Vertical text is already handled: `xian.ocr.grouping` detects tategaki from
-  quad aspect and flips column order.
+  webtoons and Western comics; from a per-site profile with a manual override,
+  because guessing wrong reverses the story.
+- Vertical text is already handled: `grouping.is_vertical` detects tategaki
+  from quad aspect and flips column order.
+
+**Two callers, one implementation.** MASHA reaches it through the bridge;
+Luduan reaches it directly for the CBZ/CBR archives on its own roadmap. Putting
+it in `xian.ocr` is what stops the manga path being written twice, and it is
+where the rest of the OCR geometry already lives.
 
 ### 6.3 Whole-page comic mode
 
@@ -535,7 +620,7 @@ job survives the tab that started it.
 | **PDF, scanned** | Page → `xian.ocr` → blocks → translate → render onto the page image. | 🔜 **Luduan has this planned** |
 | **Comics (CBZ/CBR/CB7)** | Archive of page images → the M5 comic path. | 🔜 **Luduan has this planned** |
 
-**This milestone is mostly not MASHA's to build.** Luduan's README already
+**This milestone is mostly not MASHA's to build** (decision D2). Luduan's README already
 lists text-layer PDF, scanned PDF and comic archives as planned, against the
 same `xian` vision pipeline. Building any of it a second time behind the bridge
 would be the exact duplication §0 forbids.
@@ -653,14 +738,16 @@ not hardcoded on the way there.
 
 | # | Milestone | Depends on | Ships |
 |---|---|---|---|
-| **M0** | Bridge skeleton + health detection + vitest harness | — | Nothing user-visible; unblocks everything |
+| **M0** | Bridge skeleton, MAGE starting it (D1), health detection, vitest harness | — | Nothing user-visible; unblocks everything |
 | **M1** | Bilingual pages | M0 (harness only) | The headline feature |
 | **M2** | Hover + compose | M1 | The daily-use features |
 | **M3** | Site profiles | M1 | Search, social, news, forums |
-| **M4** | Subtitles: track path, then audio, then meetings | M1 cache | Video |
-| **M5** | Images, then comics | M0 bridge | Images and manga |
+| **M4a** | Subtitles: subtitle-track path | M1 cache | Video with published subtitles |
+| **M4b** | Subtitles: basic audio path (D5) | M4a | Video without them |
+| **M4c** | Meetings | M4b, *and mileage on it* | Calls |
+| **M5** | Images, then comics | M0 bridge; `xian.ocr.comics` (D3) for the comic half | Images and manga |
 | **M6** | Documents: text formats, then EPUB via Luduan, then PDF *in* Luduan | M0 bridge, M1 segmentation, Luduan's roadmap | Files |
-| **M7** | Glossary, expertise, page context | M1 | Quality across everything |
+| **M7** | Glossary, expertise, page context, shared cache (D4) | M1; M0 bridge for the shared tier | Quality across everything |
 
 M7 is last in the table and should be pulled forward the moment M1 lands: it is
 the smallest milestone and it improves every other one.
@@ -691,18 +778,28 @@ the smallest milestone and it improves every other one.
 
 ---
 
-## 12. Open questions
+## 12. Decisions
 
-- **Does the bridge ship with MAGE, or separately?** Reusing MAGE's install
-  means one thing to run; a standalone service means MASHA works without MAGE.
-- **Who builds PDF — Luduan or the bridge?** This plan says Luduan, and the
-  bridge exposes it. Worth confirming, because it makes M6 largely a
-  scheduling question about Luduan rather than work on MASHA.
-- **Does the comic bubble-grouping live in `xian.ocr` or in Luduan?** MASHA's
-  M5 and Luduan's comic-archive item want the same code. `xian.ocr.grouping`
-  is the natural home; it already owns tategaki detection.
-- **Should the disk cache be shared with MAGE's `SessionStore`?** A term
-  translated in a game and on its wiki page are the same term.
-- **How much of the audio path is worth building** before Lemonade's realtime
-  transcription is exercised at length? M4's audio half is the least certain
-  estimate in this document.
+Recorded here because each one changes work in more than one section, and
+because the reasoning is worth more later than the answer is.
+
+| # | Decision | Consequence |
+|---|---|---|
+| **D1** | **The bridge ships with MAGE**, started and stopped by it like the Lemonade server already is (§1.2). | One thing to install and keep current, instead of two. The price: MASHA's image, comic and document features need MAGE running. Pages, hover, compose, selections and subtitles do not. |
+| **D2** | **PDF is built in Luduan**, not behind the bridge; the bridge exposes it (§7.3). | M6 becomes largely a scheduling question about Luduan's roadmap rather than new work on MASHA. Whoever reaches it first, the code lands in Luduan. |
+| **D3** | **Comic balloon-grouping and panel order live in `xian.ocr`** (§6.2), as a new `comics.py` beside `grouping.py`. | MASHA reaches it through the bridge, Luduan reaches it directly for CBZ/CBR. One implementation, in the package that already owns the OCR geometry. |
+| **D4** | **The translation cache is shared with MAGE**, as a `translations` table in the session-store database (§2.5). | A term translated in a game and on a wiki page is translated once. Requires its own retention rule — `purge_older_than` must not touch it. |
+| **D5** | **The audio subtitle path ships basic and expandable** (§5.2); meetings wait for mileage on it. | Finalised utterances only, one stream, no diarisation — with named seams for each of those. Avoids designing a transcript UI around a stream whose real behaviour nobody has measured. |
+
+### Still open
+
+- **Where the bridge's port is configured.** 13306 is assumed throughout. If
+  MAGE owns the process it can hand MASHA the port through a well-known file or
+  through Lemonade's health payload, rather than both sides hard-coding it.
+- **Whether the shared cache needs a per-source scope.** A term from a game
+  wiki and the same string in an unrelated news article are the same key today.
+  That is almost always right and occasionally wrong; worth revisiting only if
+  it produces a visible mistake.
+- **What happens to MASHA's cache when MAGE is not running.** Tier 2
+  (`chrome.storage.local`) covers it, and tier 3 syncs opportunistically — but
+  the write-back policy on reconnect is unspecified.
