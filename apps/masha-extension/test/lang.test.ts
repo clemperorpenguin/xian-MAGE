@@ -5,13 +5,21 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { dominantScript, looksLikeTargetLanguage } from '../src/core/lang';
+import { dominantScript, looksLikeTargetLanguage, scriptCounts } from '../src/core/lang';
 
 describe('dominantScript', () => {
-  it('should detect CJK text', () => {
-    expect(dominantScript('你好世界')).toBe('cjk');
-    expect(dominantScript('こんにちは')).toBe('cjk');
-    expect(dominantScript('안녕하세요')).toBe('cjk');
+  it('should tell the CJK scripts apart', () => {
+    expect(dominantScript('你好世界')).toBe('han');
+    expect(dominantScript('こんにちは')).toBe('kana');
+    expect(dominantScript('안녕하세요')).toBe('hangul');
+  });
+
+  it('should detect katakana', () => {
+    // Katakana was missing from the script table, so loanword-heavy Japanese
+    // — product names, menus, technical writing — classified as 'other'.
+    expect(dominantScript('コンピュータープログラム')).toBe('kana');
+    expect(dominantScript('ソフトウェア')).toBe('kana');
+    expect(scriptCounts('コンピューター').other).toBe(0);
   });
 
   it('should detect Latin text', () => {
@@ -40,6 +48,28 @@ describe('looksLikeTargetLanguage', () => {
 
   it('should return true when CJK text is checked against Chinese', () => {
     expect(looksLikeTargetLanguage('你好世界，这是一个测试句子', 'Chinese')).toBe(true);
+  });
+
+  it('should not call Chinese text Japanese, or the reverse', () => {
+    // Han is shared, so one CJK bucket meant a Chinese page translated into
+    // Japanese was skipped paragraph by paragraph as "already in target".
+    const chinese = '你好世界，这是一个测试句子';
+    const japanese = 'これはテストの文章です。よろしくお願いします。';
+
+    expect(looksLikeTargetLanguage(chinese, 'Japanese')).toBe(false);
+    expect(looksLikeTargetLanguage(japanese, 'Chinese')).toBe(false);
+    expect(looksLikeTargetLanguage(japanese, 'Japanese')).toBe(true);
+  });
+
+  it('should recognise kanji-heavy Japanese by its kana', () => {
+    expect(looksLikeTargetLanguage('東京都の天気は晴れです。明日も晴れるでしょう。', 'Japanese')).toBe(true);
+  });
+
+  it('should not confuse Korean with the other CJK languages', () => {
+    const korean = '안녕하세요, 이것은 테스트 문장입니다.';
+    expect(looksLikeTargetLanguage(korean, 'Korean')).toBe(true);
+    expect(looksLikeTargetLanguage(korean, 'Chinese')).toBe(false);
+    expect(looksLikeTargetLanguage(korean, 'Japanese')).toBe(false);
   });
 
   it('should return false for very short text', () => {

@@ -11,6 +11,10 @@ from typing import Literal
 
 router = APIRouter(prefix="/ocr")
 
+# True once the PaddleOCR engine is wired in place of the 501 stubs below.
+# /health reports this verbatim, so the two can never drift apart.
+IMPLEMENTED = False
+
 
 class OcrRequest(BaseModel):
     image: str  # base64-encoded image bytes

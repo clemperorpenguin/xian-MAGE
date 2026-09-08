@@ -4,7 +4,6 @@ Entry point for ``python -m xian_bridge``.
 Launches the FastAPI app on 127.0.0.1:13306 with uvicorn.
 """
 
-import sys
 import argparse
 import uvicorn
 

@@ -29,7 +29,8 @@
  * records — an observer that reacts to its own writes is an infinite loop.
  */
 
-import { walkPage, getNodeText, WalkResult } from './walk';
+import { walkPage, getNodeText } from './walk';
+import { SOURCE_ID_ATTR } from './inject';
 import { toSegments, Segment } from '../../core/segment';
 
 export type NewSegmentsCallback = (segments: Segment[]) => void;
@@ -49,7 +50,6 @@ export function observePage(
 ): () => void {
   const target = root || document.body;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastKnownLength = 0;
 
   const observer = new MutationObserver((records) => {
     // Filter out mutations from MASHA's own injections
@@ -58,12 +58,13 @@ export function observePage(
       if (record.target instanceof Element && record.target.tagName === 'MASHA-TR') {
         return false;
       }
-      // Skip additions that are masha-tr elements
-      if (record.type === 'childList') {
-        for (const node of record.addedNodes) {
-          if (node instanceof Element && node.tagName === 'MASHA-TR') {
-            return false;
-          }
+      // Skip additions that are only masha-tr elements. A record that also
+      // brought real content still counts — otherwise MASHA's own write in the
+      // same batch would mask the content it was reacting to.
+      if (record.type === 'childList' && record.addedNodes.length > 0) {
+        const added = [...record.addedNodes];
+        if (added.every(node => node instanceof Element && node.tagName === 'MASHA-TR')) {
+          return false;
         }
       }
       return true;
@@ -83,10 +84,11 @@ export function observePage(
         (id) => getNodeText(walkResult.nodeTable, id),
       );
 
-      // Filter to only new segments (those not seen before)
+      // Filter to only new segments — a source element carries data-masha-id
+      // once its translation lands, and chunks of one block share that id.
       const newSegments = segments.filter(s => {
-        const source = document.querySelector(`[data-masha-id="${s.id}"]`);
-        return !source;
+        const baseId = s.id.split('#')[0];
+        return !document.querySelector(`[${SOURCE_ID_ATTR}="${baseId}"]`);
       });
 
       if (newSegments.length > 0 && callback) {

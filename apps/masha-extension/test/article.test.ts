@@ -1,120 +1,27 @@
 /*
  * Tests for article root finding.
  *
- * Browser-free — operates on serialisable NodeSummary trees built from
- * fixture data rather than the live DOM.
+ * Browser-free — operates on NodeSummary trees built by test/helpers/tree.ts,
+ * which measures text and link text the way the live-DOM walker does.
  */
 
 import { describe, it, expect } from 'vitest';
-import { findArticleRoot, DEFAULT_ARTICLE_CONFIG } from '../src/core/dom/article';
-import { NodeSummary } from '../src/core/dom/tree';
+import { findArticleRoot } from '../src/core/dom/article';
+import { linkDensity } from '../src/core/dom/tree';
+import { buildFixture, prose } from './helpers/tree';
 
-/** Build a simple article-like tree. */
-function makeArticleTree(): NodeSummary {
+/** A link-only navigation block: <nav><ul><li><a>…</a></li>…</ul></nav>. */
+function navigation(className = 'sidebar') {
   return {
-    id: 0,
-    tag: 'div',
-    className: 'page',
-    elementId: '',
-    textLength: 0,
-    linkTextLength: 0,
-    role: undefined,
+    tag: 'nav',
+    className,
     children: [
       {
-        id: 1,
-        tag: 'nav',
-        className: 'sidebar',
-        elementId: '',
-        textLength: 50,
-        linkTextLength: 40,
-        role: undefined,
-        children: [],
-      },
-      {
-        id: 2,
-        tag: 'article',
-        className: 'post',
-        elementId: '',
-        textLength: 500,
-        linkTextLength: 20,
-        role: undefined,
-        children: [
-          {
-            id: 3,
-            tag: 'h1',
-            className: '',
-            elementId: '',
-            textLength: 30,
-            linkTextLength: 0,
-            role: undefined,
-            children: [],
-          },
-          {
-            id: 4,
-            tag: 'p',
-            className: '',
-            elementId: '',
-            textLength: 200,
-            linkTextLength: 5,
-            role: undefined,
-            children: [],
-          },
-          {
-            id: 5,
-            tag: 'p',
-            className: '',
-            elementId: '',
-            textLength: 300,
-            linkTextLength: 10,
-            role: undefined,
-            children: [],
-          },
-        ],
-      },
-      {
-        id: 6,
-        tag: 'footer',
-        className: 'footer',
-        elementId: '',
-        textLength: 30,
-        linkTextLength: 25,
-        role: undefined,
-        children: [],
-      },
-    ],
-  };
-}
-
-/** Build a page with no article (search results). */
-function makeSearchPage(): NodeSummary {
-  return {
-    id: 0,
-    tag: 'div',
-    className: 'search-page',
-    elementId: '',
-    textLength: 0,
-    linkTextLength: 0,
-    role: undefined,
-    children: [
-      {
-        id: 1,
-        tag: 'div',
-        className: 'result',
-        elementId: '',
-        textLength: 20,
-        linkTextLength: 15,
-        role: undefined,
-        children: [],
-      },
-      {
-        id: 2,
-        tag: 'div',
-        className: 'result',
-        elementId: '',
-        textLength: 15,
-        linkTextLength: 12,
-        role: undefined,
-        children: [],
+        tag: 'ul',
+        children: ['Home', 'Archive', 'About us', 'Contact', 'Subscribe now'].map(label => ({
+          tag: 'li',
+          children: [{ tag: 'a', text: label }],
+        })),
       },
     ],
   };
@@ -122,34 +29,75 @@ function makeSearchPage(): NodeSummary {
 
 describe('findArticleRoot', () => {
   it('should find the article element when present and non-trivial', () => {
-    const tree = makeArticleTree();
-    const rootId = findArticleRoot(tree);
-    expect(rootId).toBe(2); // the <article> node
+    const { root, ids } = buildFixture({
+      tag: 'div',
+      className: 'page',
+      children: [
+        navigation(),
+        {
+          tag: 'article',
+          className: 'post',
+          children: [
+            { tag: 'h1', text: 'A headline for the piece' },
+            { tag: 'p', text: prose(200) },
+            { tag: 'p', text: prose(300) },
+          ],
+        },
+        { tag: 'footer', className: 'footer', children: [{ tag: 'a', text: 'Terms of service' }] },
+      ],
+    });
+
+    expect(findArticleRoot(root)).toBe(ids.get('article')![0]);
   });
 
   it('should return null when no article content exists', () => {
-    const tree = makeSearchPage();
-    const rootId = findArticleRoot(tree);
-    expect(rootId).toBeNull();
-  });
+    const { root } = buildFixture({
+      tag: 'div',
+      className: 'search-page',
+      children: [
+        { tag: 'div', className: 'result', children: [{ tag: 'a', text: 'A result' }] },
+        { tag: 'div', className: 'result', children: [{ tag: 'a', text: 'Another' }] },
+      ],
+    });
 
-  it('should short-circuit on <article> tag', () => {
-    const tree = makeArticleTree();
-    const rootId = findArticleRoot(tree);
-    expect(rootId).toBe(2);
+    expect(findArticleRoot(root)).toBeNull();
   });
 
   it('should handle an empty tree gracefully', () => {
-    const empty: NodeSummary = {
-      id: 0,
+    const { root } = buildFixture({ tag: 'div' });
+    expect(findArticleRoot(root)).toBeNull();
+  });
+
+  it('should score navigation as navigation, not prose', () => {
+    // The walker measures link text over the subtree. When textLength was own
+    // text only, a <nav> full of <li><a> had textLength 0, linkDensity fell
+    // through its zero guard to 0, and pure navigation scored as clean prose.
+    const { root, ids } = buildFixture({
       tag: 'div',
-      className: '',
-      elementId: '',
-      textLength: 0,
-      linkTextLength: 0,
-      role: undefined,
-      children: [],
-    };
-    expect(findArticleRoot(empty)).toBeNull();
+      className: 'page',
+      children: [
+        navigation(),
+        { tag: 'div', className: 'body', children: [{ tag: 'p', text: prose(400) }] },
+      ],
+    });
+
+    const nav = root.children[0];
+    expect(linkDensity(nav)).toBeGreaterThan(0.9);
+    expect(findArticleRoot(root)).not.toBe(ids.get('nav')![0]);
+  });
+
+  it('should prefer comma-dense prose over longer boilerplate', () => {
+    // Readability's comma term. It used to count commas in the *string form of
+    // the text length* ("500"), which is always zero, so length alone decided.
+    const commaRich = 'One, two, three, four, five, six, seven, eight, nine, ten, '.repeat(4);
+    const { root, ids } = buildFixture({
+      tag: 'div',
+      children: [
+        { tag: 'section', children: [{ tag: 'p', text: commaRich }] },
+        { tag: 'section', children: [{ tag: 'p', text: 'x'.repeat(500) }] },
+      ],
+    });
+
+    expect(findArticleRoot(root)).toBe(ids.get('p')![0]);
   });
 });

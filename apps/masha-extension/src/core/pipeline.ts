@@ -30,9 +30,10 @@
  */
 
 import { Segment } from './segment';
-import { FetchFn } from './translator';
+import { cleanResponse, FetchFn } from './translator';
 import { MashaConfig } from '../platform/bridge';
-import { buildTranslationMessages } from './prompt';
+import { buildBatchTranslationMessages, segmentMarker } from './prompt';
+import { normalizeLemonadeBaseUrl } from '../utils/lemonadeUrl';
 
 export interface PageTranslateOptions {
   segments: Segment[];
@@ -77,7 +78,7 @@ function buildBatch(segments: Segment[], budget: number): Batch | null {
   let totalChars = 0;
 
   for (const seg of segments) {
-    const marker = `<<<MASHA_SEGMENT_${seg.id}>>>`;
+    const marker = segmentMarker(seg.id);
     const part = `${marker}\n${seg.text}\n${marker}`;
 
     if (totalChars + part.length > budget && parts.length > 0) {
@@ -102,8 +103,10 @@ function buildBatch(segments: Segment[], budget: number): Batch | null {
 /**
  * Parse a batch response, validating markers and extracting translations.
  *
- * Returns a map of segment id → translated text.
- * Throws if a marker is missing or the response is malformed.
+ * Returns a map of segment id → translated text, holding only the segments
+ * that came back intact. A batch is not all-or-nothing: one mangled marker
+ * used to throw away nine good translations alongside the bad one, so
+ * anything missing from the map is reported per segment by the caller.
  */
 function parseBatchResponse(
   response: string,
@@ -112,24 +115,21 @@ function parseBatchResponse(
   const result = new Map<string, string>();
 
   for (const marker of markers) {
-    const openTag = `<<<MASHA_SEGMENT_${marker}>>>`;
-    const closeTag = `<<<MASHA_SEGMENT_${marker}>>>`;
+    const tag = segmentMarker(marker);
 
-    // Find the opening marker
-    const openIdx = response.indexOf(openTag);
-    if (openIdx === -1) {
-      throw new Error(`Missing marker for segment ${marker}`);
-    }
+    const openIdx = response.indexOf(tag);
+    if (openIdx === -1) continue;
 
-    // Find the closing marker after the opening
-    const contentStart = openIdx + openTag.length;
-    const closeIdx = response.indexOf(closeTag, contentStart);
-    if (closeIdx === -1) {
-      throw new Error(`Missing closing marker for segment ${marker}`);
-    }
+    const contentStart = openIdx + tag.length;
 
-    const translated = response.slice(contentStart, closeIdx).trim();
-    result.set(marker, translated);
+    // Prefer the matching closing marker; if the model dropped it, stop at
+    // whatever marker comes next rather than swallowing the rest of the batch.
+    let end = response.indexOf(tag, contentStart);
+    if (end === -1) end = response.indexOf('<<<MASHA_SEGMENT_', contentStart);
+    if (end === -1) end = response.length;
+
+    const translated = cleanResponse(response.slice(contentStart, end));
+    if (translated) result.set(marker, translated);
   }
 
   return result;
@@ -168,16 +168,17 @@ export async function translatePage(
   async function processBatch(batch: Batch): Promise<void> {
     if (opts.signal?.aborted) return;
 
-    const baseUrl = opts.config.serverUrl.replace(/\/+$/, '');
+    const baseUrl = normalizeLemonadeBaseUrl(opts.config.serverUrl);
     const endpoint = `${baseUrl}/chat/completions`;
 
     // Build the prompt for this batch
-    const messages = buildTranslationMessages({
+    const messages = buildBatchTranslationMessages({
       selection: batch.body,
       context: '', // Page context could be added here
       sourceLang: opts.config.sourceLang,
       targetLang: opts.config.targetLang,
       styles: opts.config.styles,
+      glossary: opts.glossary,
     });
 
     const payload = {
@@ -193,6 +194,7 @@ export async function translatePage(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: opts.signal,
       });
 
       if (!response.ok) {
@@ -209,15 +211,19 @@ export async function translatePage(
       // Parse markers from the response
       const translations = parseBatchResponse(content, batch.markers);
 
-      // Stream each segment as it's received
+      // A cancelled run must not keep painting the page it was asked to leave.
+      if (opts.signal?.aborted) return;
+
+      // Stream each segment as it's received; report only the ones that failed
       for (const id of batch.markers) {
         const translated = translations.get(id);
         if (translated) {
           opts.onSegment(id, translated);
+        } else {
+          opts.onError(id, new Error(`Missing marker for segment ${id}`));
         }
       }
     } catch (error) {
-      // Fall back to per-segment retry for mis-mapped batches
       for (const id of batch.markers) {
         opts.onError(id, error instanceof Error ? error : new Error(String(error)));
       }

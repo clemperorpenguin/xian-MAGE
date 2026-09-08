@@ -27,10 +27,15 @@
  * paragraph loses exactly the context that makes MASHA worth using.
  */
 
-import { NodeSummary } from './dom/tree';
+import { hasBlockDescendant, NodeSummary } from './dom/tree';
 
 export interface Segment {
-  /** Stable id within a page load: `${nodeId}:${hash}`. */
+  /**
+   * Stable id: `${nodeId}:${hash}`, plus `#${chunk}` when a long block was
+   * split. `nodeId` comes from the element's `data-masha-node` attribute, so
+   * it survives insertions elsewhere in the document; `hash` covers the text,
+   * so an edited block is re-translated rather than left stale.
+   */
   id: string;
   /** Normalised, whitespace-collapsed text. */
   text: string;
@@ -57,13 +62,6 @@ export const DEFAULT_SEGMENT_POLICY: SegmentPolicy = {
   skipTags: new Set(['code', 'pre', 'kbd', 'samp', 'var', 'script', 'style', 'svg', 'math']),
   skipIfNumeric: true,
 };
-
-/** Tags that are themselves block-level containers (not leaf text). */
-const BLOCK_TAGS = new Set([
-  'p', 'div', 'section', 'article', 'main', 'header', 'footer', 'nav',
-  'blockquote', 'figure', 'figcaption', 'li', 'td', 'th', 'h1', 'h2', 'h3',
-  'h4', 'h5', 'h6',
-]);
 
 /** Heading tags for kind classification. */
 const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
@@ -97,43 +95,44 @@ export function shouldTranslate(text: string, policy: SegmentPolicy = DEFAULT_SE
 }
 
 /**
+ * Split a single sentence that is on its own longer than the budget.
+ */
+function hardSplit(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text];
+  const pieces: string[] = [];
+  for (let i = 0; i < text.length; i += maxChars) {
+    pieces.push(text.slice(i, i + maxChars));
+  }
+  return pieces;
+}
+
+/**
  * Split a long block at sentence boundaries.
  * Returns array of chunks, each ≤ maxChars.
  */
 export function splitLongBlock(text: string, maxChars: number): string[] {
   if (text.length <= maxChars) return [text];
 
+  // Each match is one sentence *including* its terminator and trailing space,
+  // so re-joining the chunks reproduces the original spacing.
+  const sentences = text.match(/[^.!?。！？]*[.!?。！？]+\s*|[^.!?。！？]+$/g) ?? [text];
+
   const chunks: string[] = [];
-  const sentenceEnds = /[.!?。！？]+/g;
-  let lastIndex = 0;
-  let match;
+  let current = '';
 
-  while ((match = sentenceEnds.exec(text)) !== null) {
-    const end = match.index + match[0].length;
-    if (end - lastIndex <= maxChars) continue;
-
-    // Push the chunk up to this sentence end
-    const chunk = text.slice(lastIndex, end).trim();
-    if (chunk.length >= 1) chunks.push(chunk);
-    lastIndex = end;
-
-    // If we've accumulated enough, break
-    if (chunks.length > 0 && chunks.join('').length >= maxChars * 2) break;
-  }
-
-  // Remaining text
-  const remaining = text.slice(lastIndex).trim();
-  if (remaining.length >= 1) chunks.push(remaining);
-
-  // If splitting didn't produce multiple chunks, force split at maxChars
-  if (chunks.length <= 1 && text.length > maxChars) {
-    chunks.length = 0;
-    for (let i = 0; i < text.length; i += maxChars) {
-      chunks.push(text.slice(i, i + maxChars).trim());
+  for (const sentence of sentences) {
+    for (const piece of hardSplit(sentence, maxChars)) {
+      if (current !== '' && current.length + piece.length > maxChars) {
+        chunks.push(current.trim());
+        current = '';
+      }
+      current += piece;
     }
   }
 
-  return chunks;
+  if (current.trim() !== '') chunks.push(current.trim());
+
+  return chunks.filter(chunk => chunk.length > 0);
 }
 
 /**
@@ -151,9 +150,23 @@ export function toSegments(
   const segments: Segment[] = [];
   let order = 0;
 
+  /**
+   * The text function returns a node's *whole subtree*, so emitting both a
+   * container and its children would send the same prose once per level of
+   * nesting. Only the innermost block is a segment.
+   */
+  const isContainer = (node: NodeSummary) =>
+    hasBlockDescendant(node, tag => policy.skipTags.has(tag));
+
   function walk(node: NodeSummary) {
     // Skip tags that should never be translated
     if (policy.skipTags.has(node.tag)) return;
+
+    // A container: its text belongs to the blocks underneath it.
+    if (isContainer(node)) {
+      for (const child of node.children) walk(child);
+      return;
+    }
 
     // Determine the kind
     let kind: Segment['kind'] = 'block';
@@ -163,20 +176,20 @@ export function toSegments(
     if (node.tag === 'blockquote') kind = 'quote';
 
     const nodeText = text(node.id);
-    if (shouldTranslate(nodeText, policy)) {
-      const id = `${node.id}:${hashStr(nodeText)}`;
+    if (!shouldTranslate(nodeText, policy)) return;
+
+    const baseId = `${node.id}:${hashStr(nodeText)}`;
+    const chunks = splitLongBlock(nodeText, policy.maxChars);
+
+    chunks.forEach((chunk, index) => {
+      if (!shouldTranslate(chunk, policy)) return;
       segments.push({
-        id,
-        text: nodeText,
+        id: chunks.length > 1 ? `${baseId}#${index}` : baseId,
+        text: chunk,
         kind,
         order: order++,
       });
-    }
-
-    // Recurse into children for deeper segmentation
-    for (const child of node.children) {
-      walk(child);
-    }
+    });
   }
 
   walk(nodes);
@@ -185,4 +198,18 @@ export function toSegments(
   segments.sort((a, b) => a.order - b.order);
 
   return segments;
+}
+
+/** The node id a segment (or chunk) belongs to — the part before the colon. */
+export function segmentNodeId(segmentId: string): number | null {
+  const parsed = Number.parseInt(segmentId.split(':')[0], 10);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+/** The chunk index of a segment id, or 0 when the block was not split. */
+export function segmentChunkIndex(segmentId: string): number {
+  const hash = segmentId.indexOf('#');
+  if (hash === -1) return 0;
+  const parsed = Number.parseInt(segmentId.slice(hash + 1), 10);
+  return Number.isInteger(parsed) ? parsed : 0;
 }

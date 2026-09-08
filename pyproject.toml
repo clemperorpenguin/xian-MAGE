@@ -22,6 +22,7 @@ members = [
 # script-style "test_*.py" files (e.g. lore-client's test_scrape.py).
 testpaths = [
     "packages/xian-vl/tests",
+    "packages/xian-bridge/tests",
     "apps/mage-client",
 ]
 addopts = "-q --import-mode=importlib"

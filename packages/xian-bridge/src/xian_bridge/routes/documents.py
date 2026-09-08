@@ -14,6 +14,10 @@ from typing import Literal, Optional
 
 router = APIRouter(prefix="/documents")
 
+# True once the Luduan job pipeline is wired in place of the 501 stubs below.
+# /health reports this verbatim, so the two can never drift apart.
+IMPLEMENTED = False
+
 
 class DocumentRequest(BaseModel):
     source_lang: str

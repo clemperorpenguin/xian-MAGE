@@ -13,7 +13,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://.gnu.org/licenses/>.
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
  * Contact: clem@pendragon.systems (Clementine Pendragon, c/o Xian Project Development)
  */
@@ -26,14 +26,16 @@
  *
  * Scoring per node:
  *   base = 1 + commaCount + min(floor(textLength / 100), 3)
- *   score propagates to ancestors divided by depth
+ *   only innermost blocks score; the score propagates to ancestors, divided
+ *   by depth (scoring containers too would double-count their own children,
+ *   and hand the page root the highest score every time)
  *   final score scaled by (1 - linkDensity)
  *   negative-weight classes subtract, positive ones add
  *
  * <article> and role="main" short-circuit when present and non-trivial.
  */
 
-import { NodeSummary, commaCount, linkDensity } from './tree';
+import { hasBlockDescendant, NodeSummary, linkDensity } from './tree';
 
 export interface ArticleConfig {
   /** Below this length a node scores nothing. */
@@ -54,7 +56,9 @@ export const DEFAULT_ARTICLE_CONFIG: ArticleConfig = {
 };
 
 /** Class/id patterns that indicate non-content regions. */
-const NEGATIVE_PATTERNS = /comment|sidebar|footer|promo|share|related|menu|nav|widget|ad/i;
+// `ad` is anchored: unanchored it also matches header, reader, shadow,
+// breadcrumb and load-more, which cancels their positive weight.
+const NEGATIVE_PATTERNS = /comment|sidebar|footer|promo|share|related|menu|nav|widget|\bad(?:s|vert(?:isement)?s?)?\b/i;
 const POSITIVE_PATTERNS = /article|content|post|entry|story|main|body|page/i;
 
 /**
@@ -68,7 +72,7 @@ function scoreNode(
 ): void {
   if (node.textLength < config.minTextLength) return;
 
-  const base = 1 + commaCount(node.textLength.toString()) + Math.min(Math.floor(node.textLength / 100), 3);
+  const base = 1 + node.commas + Math.min(Math.floor(node.textLength / 100), 3);
   const scaled = base * (1 - linkDensity(node));
 
   if (scaled <= 0) return;
@@ -133,7 +137,9 @@ export function findArticleRoot(
     }
 
     ancestorStack.push(node);
-    scoreNode(node, scores, ancestorStack, config);
+    if (!hasBlockDescendant(node)) {
+      scoreNode(node, scores, ancestorStack, config);
+    }
 
     for (const child of node.children) walk(child);
     ancestorStack.pop();

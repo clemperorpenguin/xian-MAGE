@@ -44,7 +44,13 @@ export function cleanResponse(raw: string): string {
 /** Minimal subset of the global `fetch` we depend on (keeps core testable). */
 export type FetchFn = (
   input: string,
-  init: { method: string; headers: Record<string, string>; body: string },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+    /** Cancellation, so a stopped page translation drops its in-flight requests. */
+    signal?: AbortSignal;
+  },
 ) => Promise<{ ok: boolean; statusText: string; json(): Promise<any> }>;
 
 export interface TranslateConfig {

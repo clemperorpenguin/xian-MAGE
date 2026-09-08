@@ -25,9 +25,20 @@
  * root, so the site's CSS cannot restyle the translation and MASHA's CSS
  * cannot leak onto the site.
  *
+ * Source elements are found by the `data-masha-node` id the walker stamped on
+ * them, and are marked with `data-masha-id` (node id + text hash) once
+ * translated — that mark is what the observer's "have I seen this?" filter
+ * reads, so injecting and de-duplicating stay in step.
+ *
  * Idempotent: re-running skips what is already done. Undo removes all
- * <masha-tr> elements and strips data-masha-id attributes.
+ * <masha-tr> elements and strips MASHA's attributes.
  */
+
+import { segmentChunkIndex, segmentNodeId } from '../../core/segment';
+import { NODE_ID_ATTR } from './walk';
+
+/** Attribute marking a source element as translated (node id + text hash). */
+export const SOURCE_ID_ATTR = 'data-masha-id';
 
 const SHADOW_STYLE = `
   :host {
@@ -68,6 +79,12 @@ const PAGE_STYLE = `
 
 let styleInjected = false;
 
+/**
+ * Chunk texts already painted into a <masha-tr>, so a long block split across
+ * several requests reassembles in order however the responses arrive.
+ */
+const renderedChunks = new WeakMap<Element, { content: HTMLElement; chunks: Map<number, string> }>();
+
 /** Inject the page-level style once. */
 function ensurePageStyle(): void {
   if (styleInjected) return;
@@ -77,41 +94,72 @@ function ensurePageStyle(): void {
   styleInjected = true;
 }
 
+/** The part of a segment id shared by every chunk of one block. */
+function baseSegmentId(segmentId: string): string {
+  const hash = segmentId.indexOf('#');
+  return hash === -1 ? segmentId : segmentId.slice(0, hash);
+}
+
+/** Find the element a segment id refers to, via its stable walk id. */
+export function findSource(segmentId: string): Element | null {
+  const nodeId = segmentNodeId(segmentId);
+  if (nodeId === null) return null;
+  return document.querySelector(`[${NODE_ID_ATTR}="${nodeId}"]`);
+}
+
 /**
  * Inject a translation for a single segment.
  *
  * Creates a <masha-tr> shadow-rooted element right after the source element,
  * and copies display from the source so a translated <li> still sits in the list.
  *
- * @param sourceSelector - CSS selector for the source element (e.g. [data-masha-id="42:9f3c"])
+ * @param segmentId - The segment id (`nodeId:hash`, optionally `#chunk`).
  * @param translatedText - The translated text to inject.
  * @param lang - BCP47 language tag for the translation.
  * @param dir - 'ltr' | 'rtl' direction.
+ * @returns true when the translation was placed on the page.
  */
 export function injectTranslation(
-  sourceId: string,
+  segmentId: string,
   translatedText: string,
   lang: string = 'en',
   dir: 'ltr' | 'rtl' = 'ltr',
-): void {
+): boolean {
   ensurePageStyle();
 
-  // Find the source element
-  const source = document.querySelector(`[data-masha-id="${sourceId}"]`);
-  if (!source) return;
+  const source = findSource(segmentId);
+  if (!source) return false;
 
-  // Check if already translated
-  const existing = source.nextElementSibling;
-  if (existing?.tagName === 'MASHA-TR') return; // already done
+  const baseId = baseSegmentId(segmentId);
+  const chunkIndex = segmentChunkIndex(segmentId);
+
+  // Reuse the sibling <masha-tr> when it belongs to this same block — a split
+  // block arrives as several chunks that share one anchor.
+  const sibling = source.nextElementSibling;
+  let tr: Element | null =
+    sibling?.tagName === 'MASHA-TR' && sibling.getAttribute('data-masha-for') === baseId
+      ? sibling
+      : null;
+
+  if (tr) {
+    const state = renderedChunks.get(tr);
+    if (!state) return false; // a <masha-tr> from a previous page load
+    if (state.chunks.get(chunkIndex) === translatedText) return true; // already done
+    state.chunks.set(chunkIndex, translatedText);
+    state.content.textContent = orderedText(state.chunks);
+    return true;
+  }
+
+  if (sibling?.tagName === 'MASHA-TR') return false; // anchored to a stale block
 
   // Get the source's display property
   const display = getComputedStyle(source).display;
 
   // Create the custom element
-  const tr = document.createElement('masha-tr');
-  tr.setAttribute('data-masha-for', sourceId);
-  tr.lang = lang;
-  tr.dir = dir;
+  tr = document.createElement('masha-tr');
+  tr.setAttribute('data-masha-for', baseId);
+  (tr as HTMLElement).lang = lang;
+  (tr as HTMLElement).dir = dir;
 
   // Shadow root
   const shadow = tr.attachShadow({ mode: 'closed' });
@@ -124,21 +172,36 @@ export function injectTranslation(
   // Content wrapper
   const content = document.createElement('div');
   content.className = 'masha-tr-content';
-  content.textContent = translatedText;
+  const chunks = new Map<number, string>([[chunkIndex, translatedText]]);
+  content.textContent = orderedText(chunks);
   shadow.appendChild(content);
+  renderedChunks.set(tr, { content, chunks });
 
   // Copy display from source
-  tr.style.display = display;
+  (tr as HTMLElement).style.display = display;
 
   // Insert after the source element
   source.insertAdjacentElement('afterend', tr);
+
+  // Mark the source so the observer stops re-reporting it as new content
+  markSource(baseId, source);
+
+  return true;
+}
+
+/** Join the chunks of one block back together in document order. */
+function orderedText(chunks: Map<number, string>): string {
+  return [...chunks.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, text]) => text)
+    .join(' ');
 }
 
 /**
  * Mark a source element as translated (sets data-masha-id).
  */
 export function markSource(sourceId: string, element: Element): void {
-  element.setAttribute('data-masha-id', sourceId);
+  element.setAttribute(SOURCE_ID_ATTR, sourceId);
 }
 
 /**
@@ -146,5 +209,6 @@ export function markSource(sourceId: string, element: Element): void {
  */
 export function undoAll(): void {
   document.querySelectorAll('masha-tr').forEach(n => n.remove());
-  document.querySelectorAll('[data-masha-id]').forEach(n => n.removeAttribute('data-masha-id'));
+  document.querySelectorAll(`[${SOURCE_ID_ATTR}]`).forEach(n => n.removeAttribute(SOURCE_ID_ATTR));
+  document.querySelectorAll(`[${NODE_ID_ATTR}]`).forEach(n => n.removeAttribute(NODE_ID_ATTR));
 }

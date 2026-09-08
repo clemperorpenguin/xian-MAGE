@@ -39,40 +39,52 @@ export interface NodeSummary {
   className: string;
   /** The element's id attribute. */
   elementId: string;
-  /** Own text length, excluding descendants'. */
+  /**
+   * Text length of the node *including* its descendants.
+   *
+   * Subtree-inclusive on purpose: ``linkTextLength`` is measured over the same
+   * subtree, and a ratio between two different scopes is not a link density.
+   */
   textLength: number;
   /** Text length inside <a> descendants (for link-density test). */
   linkTextLength: number;
+  /** Commas in the node's text — Readability's prose signal. */
+  commas: number;
   /** Child nodes (recursive). */
   children: NodeSummary[];
 }
 
-/** Build a flat list of all leaf text-bearing nodes, indexed by id. */
-export interface NodeTableEntry {
-  id: number;
-  /** The text content (normalised whitespace). */
-  text: string;
-}
+/**
+ * Tags that are block-level containers rather than leaf text.
+ *
+ * Shared by the segmenter and the article finder: both need to know where the
+ * innermost block sits — one to translate it, the other to score it.
+ */
+export const BLOCK_TAGS = new Set([
+  'p', 'div', 'section', 'article', 'main', 'header', 'footer', 'nav',
+  'blockquote', 'figure', 'figcaption', 'li', 'td', 'th', 'h1', 'h2', 'h3',
+  'h4', 'h5', 'h6', 'ul', 'ol', 'dl', 'dt', 'dd', 'table', 'thead', 'tbody',
+  'tfoot', 'tr', 'aside', 'form', 'fieldset', 'details', 'summary',
+]);
 
 /**
- * Collect all text-bearing leaf nodes into a flat table, keyed by the same
- * ids used in the tree. This is the serialised "text content" of the page.
+ * Does this node contain another block?
+ *
+ * A node's text covers its whole subtree, so a node with block descendants is
+ * a container: its text belongs to the blocks underneath it, not to itself.
+ *
+ * @param skip - Optional predicate for subtrees to ignore entirely.
  */
-export function buildNodeTable(root: NodeSummary): NodeTableEntry[] {
-  const table: NodeTableEntry[] = [];
-  let nextId = 0;
-
-  function walk(node: NodeSummary) {
-    if (node.children.length === 0 && node.textLength > 0) {
-      table.push({ id: node.id, text: '' }); // placeholder — filled by the content script
-    }
-    for (const child of node.children) {
-      walk(child);
-    }
+export function hasBlockDescendant(
+  node: NodeSummary,
+  skip?: (tag: string) => boolean,
+): boolean {
+  for (const child of node.children) {
+    if (skip?.(child.tag)) continue;
+    if (BLOCK_TAGS.has(child.tag)) return true;
+    if (hasBlockDescendant(child, skip)) return true;
   }
-
-  walk(root);
-  return table;
+  return false;
 }
 
 /**
