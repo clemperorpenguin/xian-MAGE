@@ -2237,6 +2237,7 @@ source = { editable = "packages/xian-bridge" }
 dependencies = [
     { name = "fastapi" },
     { name = "luduan-client" },
+    { name = "python-multipart" },
     { name = "uvicorn" },
     { name = "xian-vl", extra = ["ocr"] },
 ]
@@ -2245,6 +2246,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "luduan-client", editable = "apps/luduan-client" },
+    { name = "python-multipart", specifier = ">=0.0.18" },
     { name = "uvicorn", specifier = ">=0.32" },
     { name = "xian-vl", extras = ["ocr"], editable = "packages/xian-vl" },
 ]

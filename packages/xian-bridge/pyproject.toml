@@ -7,6 +7,10 @@ license = {text = "GPL-3.0-or-later"}
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
+    # FastAPI needs this to parse the multipart body behind the File()/Form()
+    # parameters of the document upload route; without it the router raises at
+    # import time.  0.0.18 fixes GHSA-2jv5-9r88-3w3p (excessive-log DoS).
+    "python-multipart>=0.0.18",
     "xian-vl[ocr]",
     "luduan-client",
 ]
