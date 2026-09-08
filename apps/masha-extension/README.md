@@ -14,9 +14,16 @@ it is. Nothing here is aspirational without saying so.
 
 | | |
 |---|---|
-| ✅ | works today |
+| ✅ | works today — install the extension and use it |
+| 🧩 | built and unit-tested, not yet reachable from the UI |
 | 🔨 | being built now |
 | 📋 | planned — see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) |
+
+🧩 is the honest half of "done". The logic for M1–M7 lives in `src/core/` and
+`src/entrypoints/content/`, and it is covered by the test suite — but the
+content script still only wires up selection translation, and the popup has no
+controls for the rest. What remains for each of these is the wiring, not the
+feature.
 
 ---
 
@@ -38,22 +45,22 @@ it is. Nothing here is aspirational without saying so.
   replaced in place rather than shown in a bubble, so you can write in one
   language and send in another.
 
-- 📋 **Bilingual pages.** Translate a whole article and read the translation
+- 🧩 **Bilingual pages.** Translate a whole article and read the translation
   *underneath* each paragraph rather than instead of it. MASHA finds the
   article and leaves the navigation, adverts and comment chrome alone, so the
   page still looks like the page. Original and translation together is the
   point: it is how you read something and learn the language at the same time.
 
-- 📋 **Hover to translate.** Point at a paragraph, hold the modifier, and its
+- 🧩 **Hover to translate.** Point at a paragraph, hold the modifier, and its
   translation appears below it. The paragraph is the unit — never the word,
   never the sentence — because a paragraph carries enough context to be
   translated correctly and enough meaning to be worth reading.
 
-- 📋 **Triple-space to send.** Type in your language in any input box and press
+- 🧩 **Triple-space to send.** Type in your language in any input box and press
   space three times; MASHA replaces what you typed with the translation. Search
   in a language you do not write, argue on a forum in one you do not speak.
 
-- 📋 **Site profiles.** Search results, social timelines and news sites each
+- 🧩 **Site profiles.** Search results, social timelines and news sites each
   have a shape, and the generic article-finder does not fit all of them. MASHA
   ships tuned profiles for the handful of sites people actually read all day.
 
@@ -63,18 +70,21 @@ it is. Nothing here is aspirational without saying so.
   figures stay where they were. Text that only exists as pixels is read with
   the same OCR engine MAGE uses on game screens.
 
-- 📋 **EPUB, TXT, HTML, and subtitle files** (SRT/ASS/VTT), bilingual or
-  translation-only, as you choose.
+- 🔨 **EPUB, TXT, HTML, and subtitle files** (SRT/ASS/VTT), bilingual or
+  translation-only, as you choose. The bridge parses all five and reassembles
+  them; what it does not do yet is call the model, so the output currently
+  comes back marked `[translated]` rather than translated.
 
-- 📋 **Long documents survive the trip.** A four-hundred-page book is a job on
+- 🧩 **Long documents survive the trip.** A four-hundred-page book is a job on
   the server, not a tab you must not close: pause it, resume it, close the
   browser, come back tomorrow.
 
 ## 🎞 Video and voice
 
-- 📋 **Bilingual subtitles** on the major video sites. Where a site publishes a
+- 🧩 **Bilingual subtitles** on the major video sites. Where a site publishes a
   subtitle track MASHA translates that; where it does not, it transcribes the
-  audio and translates the result.
+  audio and translates the result. Capturing a video's audio leaves its
+  playback audible — the tap is a branch of the graph, not a diversion of it.
 
 - 📋 **Live meetings.** Running captions for calls, translated as they are
   spoken, so a meeting in a language you are still learning is a meeting you
@@ -82,11 +92,11 @@ it is. Nothing here is aspirational without saying so.
 
 ## 🏞 Images and comics
 
-- 📋 **Any image on any page.** MASHA reads the text out of it and paints the
+- 🧩 **Any image on any page.** MASHA reads the text out of it and paints the
   translation back over the original, matching the background so the result
   still reads as artwork rather than as a page of subtitles.
 
-- 📋 **Manga, manhwa and comics.** Speech bubbles are found as bubbles and
+- 🧩 **Manga, manhwa and comics.** Speech bubbles are found as bubbles and
   translated as units, right-to-left panel order included — so a chapter is
   readable the day it is posted rather than the month it is scanlated.
 
@@ -95,11 +105,12 @@ it is. Nothing here is aspirational without saying so.
 - ✅ **Style.** Tell MASHA the register you want and it carries it into every
   translation.
 
-- 📋 **Glossary.** The names, places and terms you care about, translated your
+- 🧩 **Glossary.** The names, places and terms you care about, translated your
   way, every time — shared with MAGE and Luduan, so the whole ecosystem agrees
-  with itself.
+  with itself. The prompt builder enforces it and the bridge serves it; the
+  options page to edit it is what is missing.
 
-- 📋 **Domain expertise.** Point MASHA at a field — medicine, law, a particular
+- 🧩 **Domain expertise.** Point MASHA at a field — medicine, law, a particular
   game — and it translates like someone who knows it.
 
 ---
@@ -123,11 +134,32 @@ whole documents, every frame of a subtitle track.
 - A running [Lemonade Server] (default `http://localhost:13305/v1`).
 - A translation model. MASHA defaults to the `Xian-Ultra` collection that MAGE
   registers; if it is not installed, pick any model in the popup.
-- 📋 For images, comics and documents: **MAGE running**. The OCR and document
-  pipelines live in `packages/xian-vl` and Luduan, and MAGE starts the small
-  local bridge that exposes them — so there is one thing to install rather than
-  two. Everything else (pages, hover, compose, selections, subtitles) needs only
-  Lemonade.
+- For images, comics and documents: **the bridge running** (below). Everything
+  else — pages, hover, compose, selections, subtitles — needs only Lemonade.
+
+## The bridge
+
+OCR, document jobs, the shared glossary and the shared translation cache are
+not things a browser extension can do for itself, so they live in a small local
+service, `packages/xian-bridge`, on `127.0.0.1:13306`:
+
+```bash
+uv run -m xian_bridge          # --host / --port to override
+```
+
+📋 MAGE will start it, so there is one thing to install rather than two. Until
+then, run it yourself with the line above.
+
+`GET /health` reports which backends are actually behind it — 🧩 the extension
+does not probe it yet. OCR is the backend that varies: it needs `xian-vl[ocr]`
+(PP-OCRv5 through ONNX Runtime), and without that extra `/ocr` answers `501`
+and `/health` says `"ocr": false`, rather than handing back placeholder text
+for the model to dutifully translate.
+
+The service listens where every page in your browser can reach it, so it also
+checks the `Host` and `Origin` headers on every request; see the module
+docstring in `xian_bridge/app.py` for what each guard is for and what is still
+open by design.
 
 ## Browser support
 
@@ -148,9 +180,16 @@ unchanged.
 cd apps/masha-extension
 npm install
 npm run compile        # type-check
+npm test               # vitest — the browser-free core
 npm run build          # chrome-mv3 -> dist/chrome-mv3
 npm run build:firefox  # firefox-mv2 -> dist/firefox-mv2
 npm run dev            # live-reload dev build
+```
+
+The bridge's own tests run from the repository root:
+
+```bash
+uv run pytest packages/xian-bridge/tests
 ```
 
 ### Install (developer mode)
@@ -169,10 +208,17 @@ Settings persist through `chrome.storage`.
 
 ```
 src/
-├── core/        # browser-free: constants, prompt builder, translator
-├── platform/    # bridge.ts — the one interface a platform implements
-├── utils/       # config + Lemonade URL helpers
-└── entrypoints/ # WXT: background (menu + fetch), content (capture + overlay), popup
+├── core/          # browser-free: prompt builder, translator, batch pipeline,
+│   │              #   segmentation, cache keys, language detection
+│   ├── compose/   #   the triple-space trigger state machine
+│   ├── dom/       #   article finding, framework-free
+│   ├── profiles/  #   per-site selectors, matched on the URL
+│   └── subtitles/ #   cue policy and merging
+├── platform/      # bridge.ts — the one interface a platform implements
+├── utils/         # config + Lemonade URL helpers
+└── entrypoints/   # WXT: background (menu, model call, bridge calls), popup,
+    └── content/   #   and the page-facing modules — walk, inject, observer,
+                   #   hover, compose, subtitles, images, comic
 ```
 
 Two rules hold the design together, and every planned feature above is designed
