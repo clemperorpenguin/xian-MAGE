@@ -620,6 +620,54 @@ def keep_window_above(win_id) -> None:
     set_overlay_window_type_x11(win_id)
 
 
+#: ``SetWindowDisplayAffinity``: keep drawing the window on the monitor, but
+#: leave it out of every capture surface.  Windows 10 2004 (build 19041) and
+#: later; older builds reject the value and are left alone.
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+
+def hide_window_from_capture(win_id) -> bool:
+    """Keep one of our overlays out of anything that captures the screen.
+
+    MAGE reads the screen it is drawing on, so without this the live loop reads
+    its own output.  The frame a live box grabs contains the translation the
+    previous tick painted *over the very text it is trying to read*, and every
+    stage downstream then draws the wrong conclusion: the recognizer reads our
+    English back out of a Chinese dialogue box, the retention check sees a
+    label where it left game pixels and throws away regions that are still
+    valid, and the overlay is blanked and repainted on alternate ticks — which
+    is the flicker that looks, at a 700 ms tick, like the text never appearing
+    at all.
+
+    Windows can do this properly: DWM keeps compositing the window to the
+    monitor and omits it from capture, so what we grab is the game alone.  No
+    equivalent exists on X11 or Wayland, where the paint masking in
+    :mod:`mage.live_common` remains the only defence.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        win_id = int(win_id)
+    except (TypeError, ValueError):
+        return False
+    if not win_id:
+        return False
+
+    try:
+        ok = ctypes.windll.user32.SetWindowDisplayAffinity(
+            ctypes.c_void_p(win_id), ctypes.c_ulong(WDA_EXCLUDEFROMCAPTURE)
+        )
+        if not ok:
+            logger.debug(
+                "SetWindowDisplayAffinity(EXCLUDEFROMCAPTURE) refused for %s "
+                "(needs Windows 10 2004 or later)", win_id,
+            )
+        return bool(ok)
+    except Exception as e:
+        logger.debug("Failed to exclude window from capture: %s", e)
+        return False
+
+
 #: One shared connection for the window-hint helpers below. They run for every
 #: visible overlay on a 0.75 s tick, so the connection is opened once and kept.
 _hint_display = None

@@ -137,3 +137,120 @@ def test_qimage_to_pil_handles_scanline_padding(width):
     assert pil.size == (width, 5)
     assert pil.mode == "RGB"
     assert pil.getpixel((width - 1, 4)) == (0x3C, 0x64, 0xC8)
+
+
+# ── pixels, not PNG ──────────────────────────────────────────────────
+
+def test_the_region_image_path_skips_the_png_round_trip():
+    """The live loop wants pixels, and pays three codec passes to get them
+    through the encoded path — per region, per tick."""
+    encoded = {"calls": 0}
+
+    def fake_capture_screen():
+        encoded["calls"] += 1
+        return _png_bytes(1920, 1080)
+
+    with patch.object(ScreenCapture, "_capture_pyqt_region", return_value=None), \
+            patch.object(ScreenCapture, "_capture_pyqt_image", return_value=QImage(1920, 1080, QImage.Format.Format_RGB32)), \
+            patch.object(ScreenCapture, "capture_screen", fake_capture_screen):
+        image, already_cropped = ScreenCapture.capture_region_image(QRect(0, 0, 100, 100))
+
+    assert already_cropped is False
+    assert image.width() == 1920
+    assert encoded["calls"] == 0, "nothing on this path should encode a PNG"
+
+
+def test_a_region_on_one_screen_is_grabbed_without_the_whole_desktop():
+    """The expensive part of a tick is compositing a desktop to keep a crop
+    of it; QScreen.grabWindow takes the rectangle directly."""
+    asked = {}
+
+    class _FakePixmap:
+        """A QPixmap needs a QGuiApplication; only these two calls are made."""
+
+        def __init__(self, width, height):
+            self._image = QImage(width, height, QImage.Format.Format_RGB32)
+
+        def isNull(self):
+            return False
+
+        def toImage(self):
+            return self._image
+
+    class _FakeScreen:
+        @staticmethod
+        def geometry():
+            return QRect(0, 0, 1920, 1080)
+
+        @staticmethod
+        def grabWindow(window, x, y, width, height):
+            asked["args"] = (window, x, y, width, height)
+            return _FakePixmap(width, height)
+
+    with patch("mage.capture.screen.QGuiApplication.screens", return_value=[_FakeScreen()]), \
+            patch.object(ScreenCapture, "_capture_pyqt_image", side_effect=AssertionError("composited anyway")):
+        image, already_cropped = ScreenCapture.capture_region_image(QRect(120, 45, 640, 200))
+
+    assert already_cropped is True
+    assert asked["args"] == (0, 120, 45, 640, 200)
+    assert image.width() == 640
+
+
+def test_a_region_grab_is_offset_by_its_own_screen():
+    """grabWindow's offset is relative to the screen, not the desktop."""
+    asked = {}
+
+    class _FakeScreen:
+        def __init__(self, geometry):
+            self._geometry = geometry
+
+        def geometry(self):
+            return self._geometry
+
+        def grabWindow(self, window, x, y, width, height):
+            asked["args"] = (x, y)
+            image = QImage(width, height, QImage.Format.Format_RGB32)
+            return type("_P", (), {"isNull": lambda self: False, "toImage": lambda self: image})()
+
+    screens = [_FakeScreen(QRect(0, 0, 1920, 1080)), _FakeScreen(QRect(1920, 0, 1920, 1080))]
+    with patch("mage.capture.screen.QGuiApplication.screens", return_value=screens):
+        ScreenCapture.capture_region_image(QRect(2020, 45, 640, 200))
+
+    assert asked["args"] == (100, 45)
+
+
+def test_a_region_spanning_two_screens_falls_back_to_the_desktop():
+    class _FakeScreen:
+        def __init__(self, geometry):
+            self._geometry = geometry
+
+        def geometry(self):
+            return self._geometry
+
+        def grabWindow(self, *args):
+            raise AssertionError("no single screen holds this region")
+
+    screens = [_FakeScreen(QRect(0, 0, 1920, 1080)), _FakeScreen(QRect(1920, 0, 1920, 1080))]
+    with patch("mage.capture.screen.QGuiApplication.screens", return_value=screens), \
+            patch.object(ScreenCapture, "_capture_pyqt_image", return_value=QImage(3840, 1080, QImage.Format.Format_RGB32)):
+        image, already_cropped = ScreenCapture.capture_region_image(QRect(1800, 45, 640, 200))
+
+    assert already_cropped is False
+    assert image.width() == 3840
+
+
+def test_the_region_image_path_still_prefers_grim():
+    def fake_run(cmd, **kwargs):
+        return _Completed(_png_bytes(640, 200))
+
+    with patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland"}), \
+            patch("mage.capture.screen.sys.platform", "linux"), \
+            patch("mage.capture.screen.subprocess.run", fake_run):
+        image, already_cropped = ScreenCapture.capture_region_image(QRect(120, 45, 640, 200))
+
+    assert already_cropped is True
+    assert image.width() == 640
+
+
+def test_the_region_image_path_rejects_an_empty_rect():
+    assert ScreenCapture.capture_region_image(QRect()) == (None, False)

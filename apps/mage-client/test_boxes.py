@@ -288,3 +288,100 @@ def test_an_empty_result_clears_the_overlay(manager):
     manager._on_regions(overlay, box, [], QRect(0, 0, 400, 300), 1.0)
 
     assert overlay.regions == []
+
+
+# ── the shared capture session ───────────────────────────────────────
+
+class _FakeScreen:
+    def __init__(self, name):
+        self._name = name
+
+    def name(self):
+        return self._name
+
+
+class _FakeStream:
+    """Stands in for the QScreenCapture session, which needs a compositor."""
+
+    opened: list = []
+
+    def __init__(self, screen, parent=None, starts=True):
+        self.screen = screen
+        self.parent = parent
+        self.starts = starts
+        self.stopped = False
+        _FakeStream.opened.append(self)
+
+    def start(self):
+        return self.starts
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.fixture
+def fake_streams(monkeypatch):
+    """One screen, and a capture session that always starts."""
+    _FakeStream.opened = []
+    screen = _FakeScreen("DP-1")
+    monkeypatch.setattr("mage.capture.stream.screen_for_rect", lambda rect: screen)
+    monkeypatch.setattr("mage.capture.stream.FrameStream", _FakeStream)
+    return _FakeStream
+
+
+def test_boxes_on_one_screen_share_a_capture_session(manager, fake_streams):
+    """Five boxes are five readers of the same pixels.
+
+    A session per box is the whole cost of capturing that screen, paid over
+    again for an identical frame.
+    """
+    first = manager._stream_for(QRect(0, 0, 400, 300))
+    second = manager._stream_for(QRect(600, 400, 200, 100))
+
+    assert first is second
+    assert len(fake_streams.opened) == 1
+
+
+def test_a_session_that_will_not_start_is_not_renegotiated(manager, monkeypatch, fake_streams):
+    """A refusal is remembered: that box uses screenshots, and asks once."""
+    monkeypatch.setattr(
+        "mage.capture.stream.FrameStream",
+        lambda screen, parent=None: _FakeStream(screen, parent, starts=False),
+    )
+
+    assert manager._stream_for(QRect(0, 0, 400, 300)) is None
+    assert manager._stream_for(QRect(0, 0, 400, 300)) is None
+    assert len(fake_streams.opened) == 1
+
+
+def test_the_sessions_close_when_the_boxes_stop(manager, fake_streams):
+    """A capture session left open is a compositor client nobody reads."""
+    manager._stream_for(QRect(0, 0, 400, 300))
+
+    manager.stop_all()
+
+    assert fake_streams.opened[0].stopped is True
+    assert manager._streams == {}
+
+
+def test_a_deleted_box_takes_its_session_with_it(manager, fake_streams):
+    """The last live box going away leaves nothing capturing the screen."""
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+    manager._stream_for(box.geometry())
+
+    manager.remove_box(box)
+
+    assert fake_streams.opened[0].stopped is True
+
+
+def test_a_live_box_keeps_its_session_across_a_restart(manager, fake_streams):
+    """Moving a box stops and restarts its worker; renegotiating the portal
+    every time would cost several blank ticks."""
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+    box.mode = BoxMode.LIVE
+    manager._stream_for(box.geometry())
+
+    manager._stop_box(box)
+
+    assert fake_streams.opened[0].stopped is False
+    assert manager._streams != {}

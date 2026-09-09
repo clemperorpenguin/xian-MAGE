@@ -38,7 +38,11 @@ must only be one copy of it:
   re-translates forever.  Rather than hide the overlay and re-grab — which cost
   two extra captures and 270ms of compositor sleeps per frame, and flickered —
   the areas we painted are blanked in *both* frames before hashing.  The gate
-  then only ever looks at pixels the game controls.
+  then only ever looks at pixels the game controls.  On Windows the overlay
+  asks the compositor to leave it out of captures entirely
+  (:func:`mage.utils.window_binder.hide_window_from_capture`), which is the
+  real fix — the reader never sees its own output, and this masking is what
+  X11 and Wayland have instead.
 
 * **Carry.** Translations from earlier frames survive while a call is running
   and while text is unchanged, so the overlay neither blanks nor shimmers.
@@ -323,7 +327,6 @@ class LiveWorkerBase(QThread):
         """
         from mage.capture.screen import ScreenCapture
         from mage.utils.images import qimage_to_pil
-        from PyQt6.QtGui import QImage
 
         if self._frame_stream is not None:
             served = self._frame_stream.grab_region(self.rect)
@@ -332,14 +335,12 @@ class LiveWorkerBase(QThread):
                 return qimage_to_pil(frame)
 
         # The screenshot path crops the virtual desktop itself, so it always
-        # serves the whole request.
+        # serves the whole request.  Pixels, not PNG: this runs on every tick,
+        # and encoding a full desktop only to decode it again is the most
+        # expensive thing in the loop.
         self._served_rect = self.rect
-        data, already_cropped = ScreenCapture.capture_region(self.rect)
-        if not data:
-            return None
-
-        image = QImage.fromData(data)
-        if image.isNull():
+        image, already_cropped = ScreenCapture.capture_region_image(self.rect)
+        if image is None or image.isNull():
             return None
 
         if not already_cropped:

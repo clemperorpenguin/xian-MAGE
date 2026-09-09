@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QPoint, QRect, QEvent
 from PyQt6.QtGui import QPainter, QColor, QPen, QGuiApplication
-from mage.utils.window_binder import keep_window_above
+from mage.utils.window_binder import hide_window_from_capture, keep_window_above
 
 logger = logging.getLogger(__name__)
 
@@ -361,3 +361,5 @@ class MageOverlayWindow(QWidget):
         # Every time the window appears: Qt recreates the native window on a
         # flags change and the platform state does not survive that.
         keep_window_above(self.winId())
+        # Ours is the one thing on screen the live loop must not read back.
+        hide_window_from_capture(self.winId())
