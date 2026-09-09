@@ -38,6 +38,7 @@ from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from mage.utils.window_binder import (
+    hide_window_from_capture,
     keep_window_above,
 )
 
@@ -128,6 +129,10 @@ class InpaintOverlay(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         keep_window_above(self.winId())
+        # This window paints over the exact text the reader is looking at, so
+        # a capture that can see it feeds our own translations back into the
+        # loop.  Excluded from capture, the next frame is the game again.
+        hide_window_from_capture(self.winId())
 
     def promote(self):
         """Re-assert stacking above a fullscreen game without taking focus."""

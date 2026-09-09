@@ -251,6 +251,7 @@ class BoxManager(QObject):
         self.boxes: list[TranslationBox] = []
         self._workers: dict[str, object] = {}
         self._overlays: dict[str, object] = {}
+        self._streams: dict[str, object] = {}
         self._engine = None
         self._next_id = 1
 
@@ -268,6 +269,54 @@ class BoxManager(QObject):
                 **({"detector_model": detector} if detector else {}),
             )
         return self._engine
+
+    # ── the shared capture sessions ──────────────────────────────────
+
+    def _stream_for(self, rect: QRect):
+        """The continuous capture session covering a rectangle's screen.
+
+        Opened here, on the GUI thread, because the session delivers its frames
+        through a signal; the worker only ever grabs from it.  One per screen
+        rather than one per box: boxes on the same monitor are readers of the
+        same pixels, and a second session of one screen is the whole cost
+        again for an identical frame.
+
+        Without it every tick falls back to the screenshot path, which on
+        anything but Wayland means compositing the entire virtual desktop —
+        per box, per tick.  That is what made a single live box unusable.
+
+        A session that will not start is remembered as ``None`` so it is not
+        renegotiated every time a box restarts; those boxes use screenshots,
+        which is slower but correct.
+        """
+        from mage.capture.stream import FrameStream, screen_for_rect
+
+        screen = screen_for_rect(rect)
+        if screen is None:
+            return None
+        name = screen.name()
+        if name not in self._streams:
+            stream = FrameStream(screen, parent=self)
+            self._streams[name] = stream if stream.start() else None
+        return self._streams[name]
+
+    def _release_streams(self) -> None:
+        for stream in self._streams.values():
+            if stream is not None:
+                stream.stop()
+        self._streams.clear()
+
+    def _release_streams_if_idle(self) -> None:
+        """Close the sessions once nothing is reading through them.
+
+        A capture session is a live compositor client; leaving one open for a
+        box that has been switched to Off costs frames nobody looks at.  Boxes
+        still in Live mode count even with no worker running, because
+        :meth:`_sync_box` stops one only to start it again.
+        """
+        if self._workers or any(box.mode is BoxMode.LIVE for box in self.boxes):
+            return
+        self._release_streams()
 
     # ── the boxes ────────────────────────────────────────────────────
 
@@ -288,9 +337,11 @@ class BoxManager(QObject):
         return box
 
     def remove_box(self, box: TranslationBox) -> None:
-        self._stop_box(box)
+        # Removed before it is stopped: the capture sessions are released once
+        # no box still wants them, and a box on its way out must not count.
         if box in self.boxes:
             self.boxes.remove(box)
+        self._stop_box(box)
         box.close()
         box.deleteLater()
         self.save()
@@ -383,6 +434,7 @@ class BoxManager(QObject):
         worker = LiveOcrWorker(
             self.app.processor,
             rect,
+            frame_stream=self._stream_for(rect),
             engine=self.engine(),
             translator=make_translator(settings, self.app.processor),
             text_filter=TextFilter.from_settings(settings.value(KEY_IGNORE_PHRASES, "")),
@@ -461,6 +513,8 @@ class BoxManager(QObject):
             overlay.close()
             overlay.deleteLater()
 
+        self._release_streams_if_idle()
+
     def run_once(self, box: TranslationBox) -> None:
         """A single pass for a Once box: start it, and stop after one publish."""
         if box.mode is not BoxMode.ONCE:
@@ -487,6 +541,7 @@ class BoxManager(QObject):
             if not worker.wait(2000):
                 worker.finished.connect(worker.deleteLater)
         box.set_state(BoxState.SETTLED)
+        self._release_streams_if_idle()
 
     # ── one-off ──────────────────────────────────────────────────────
 
@@ -514,6 +569,7 @@ class BoxManager(QObject):
                 existing.requestInterruption()
                 if not existing.wait(2000):
                     existing.finished.connect(existing.deleteLater)
+            self._release_streams_if_idle()
             # The overlay outlives its reader so the translation stays on
             # screen long enough to be read, then goes on its own.
             QTimer.singleShot(hold_ms, lambda: self._dismiss_once(key))
@@ -538,6 +594,10 @@ class BoxManager(QObject):
         for box in self.boxes:
             self._stop_box(box)
             box.set_state(BoxState.IDLE)
+        # Unconditionally, unlike the per-box release: the boxes keep their
+        # modes across a stop, so "is anything still Live" would hold every
+        # session open until the app exits.
+        self._release_streams()
 
     # ── persistence ──────────────────────────────────────────────────
 

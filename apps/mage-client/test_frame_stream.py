@@ -135,7 +135,7 @@ def test_the_live_worker_falls_back_when_the_stream_is_empty(monkeypatch):
 
     class _FakeCapture:
         @staticmethod
-        def capture_region(rect):
+        def capture_region_image(rect):
             captured["rect"] = rect
             return None, False
 

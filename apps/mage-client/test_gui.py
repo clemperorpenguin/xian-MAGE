@@ -207,3 +207,55 @@ def test_an_overlay_asks_to_stay_above_when_it_appears(q_app, monkeypatch):
     finally:
         window.close()
         app.settings.clear()
+
+
+def test_an_overlay_asks_to_be_left_out_of_captures(q_app, monkeypatch):
+    """MAGE reads the screen it draws on, so its own windows must not be in
+    the frame: a live box that can see the last translation reads its own
+    output back and paints over it again."""
+    from mage.ui import overlay_base
+
+    asked = []
+    monkeypatch.setattr(overlay_base, "hide_window_from_capture", asked.append)
+
+    app = DummyApp()
+    window = MageOverlayWindow("exclude_capture_test", app=app)
+    try:
+        window.show()
+        q_app.processEvents()
+        assert asked
+    finally:
+        window.close()
+        app.settings.clear()
+
+
+def test_the_inpaint_overlay_asks_to_be_left_out_of_captures(q_app, monkeypatch):
+    """The one window that sits directly over the text being read."""
+    from mage.ui import inpaint_overlay
+
+    asked = []
+    monkeypatch.setattr(inpaint_overlay, "hide_window_from_capture", asked.append)
+
+    overlay = inpaint_overlay.InpaintOverlay()
+    try:
+        overlay.show()
+        q_app.processEvents()
+        assert asked
+    finally:
+        overlay.close()
+
+
+def test_hiding_from_capture_is_a_no_op_off_windows(monkeypatch):
+    """Nothing on X11 or Wayland does this; the paint masking covers those."""
+    from mage.utils import window_binder
+
+    monkeypatch.setattr(window_binder.sys, "platform", "linux")
+    assert window_binder.hide_window_from_capture(42) is False
+
+
+def test_hiding_from_capture_survives_a_missing_window_id(monkeypatch):
+    from mage.utils import window_binder
+
+    monkeypatch.setattr(window_binder.sys, "platform", "win32")
+    assert window_binder.hide_window_from_capture(None) is False
+    assert window_binder.hide_window_from_capture(0) is False

@@ -114,6 +114,64 @@ class ScreenCapture:
         return ScreenCapture.capture_screen(), False
 
     @staticmethod
+    def capture_region_image(rect: QRect) -> tuple[QImage | None, bool]:
+        """:meth:`capture_region`, without the PNG round trip.
+
+        Returns ``(image, already_cropped)`` on the same terms.  The continuous
+        modes call this on every tick and only ever want pixels, so the encoded
+        form is pure cost: composing the desktop, encoding a PNG of it, then
+        decoding that twice — once to check the frame is not black, once to
+        crop it — is three codec passes per region per tick, and on a 4K
+        desktop that is most of a second of CPU each time.
+        """
+        if rect is None or rect.isEmpty():
+            return None, False
+
+        if sys.platform == "linux" and os.environ.get("XDG_SESSION_TYPE") == "wayland":
+            data = ScreenCapture._capture_grim_region(rect)
+            if data:
+                image = QImage.fromData(data)
+                if not image.isNull():
+                    return image, True
+
+        region = ScreenCapture._capture_pyqt_region(rect)
+        if region is not None:
+            return region, True
+
+        return ScreenCapture._capture_pyqt_image(), False
+
+    @staticmethod
+    def _capture_pyqt_region(rect: QRect) -> QImage | None:
+        """Grab just the requested rectangle from the screen that holds it.
+
+        ``QScreen.grabWindow`` takes a sub-rectangle, and a live box asks for
+        the same small one several times a second: compositing the entire
+        virtual desktop to keep a dialogue-sized crop of it is most of the cost
+        of a tick, and all of it is thrown away.
+
+        Returns ``None`` when the region is not wholly inside one screen — a
+        box dragged across two monitors — which the full-desktop composite
+        below still handles.
+
+        No all-black check here, for the same reason the grim region path has
+        none: a dark HUD panel is legitimately black, and rejecting it would
+        drop every frame back to the expensive path.
+        """
+        try:
+            for screen in QGuiApplication.screens():
+                geometry = screen.geometry()
+                if not geometry.contains(rect):
+                    continue
+                local = rect.translated(-geometry.left(), -geometry.top())
+                pixmap = screen.grabWindow(0, local.x(), local.y(), local.width(), local.height())
+                if pixmap.isNull():
+                    return None
+                return pixmap.toImage()
+        except Exception as e:
+            logger.debug("PyQt region capture error: %s", e)
+        return None
+
+    @staticmethod
     def _capture_grim_region(rect: QRect) -> bytes | None:
         """Capture a sub-rectangle using grim's geometry flag."""
         geometry = f"{rect.x()},{rect.y()} {rect.width()}x{rect.height()}"
@@ -139,8 +197,8 @@ class ScreenCapture:
         return None
 
     @staticmethod
-    def _capture_pyqt() -> bytes | None:
-        """Capture entire virtual desktop using PyQt (X11, Windows, macOS).
+    def _capture_pyqt_image() -> QImage | None:
+        """The virtual desktop as a QImage (X11, Windows, macOS).
 
         Composites all screens into a single image so multi-monitor setups
         are fully captured.
@@ -170,19 +228,28 @@ class ScreenCapture:
             if combined.isNull():
                 return None
 
-            buffer = QBuffer()
-            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-            combined.save(buffer, "PNG")
-            data = bytes(buffer.buffer())
-
-            if ScreenCapture._is_image_empty(data):
+            image = combined.toImage()
+            if ScreenCapture._is_qimage_empty(image):
                 logger.debug("PyQt capture returned empty/black image")
                 return None
 
-            return data
+            return image
         except Exception as e:
             logger.debug("PyQt capture error: %s", e)
         return None
+
+    @staticmethod
+    def _capture_pyqt() -> bytes | None:
+        """The virtual desktop as PNG bytes, for the callers that want a file."""
+        image = ScreenCapture._capture_pyqt_image()
+        if image is None:
+            return None
+
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not image.save(buffer, "PNG"):
+            return None
+        return bytes(buffer.buffer())
 
     @staticmethod
     def _capture_spectacle() -> bytes | None:
@@ -268,8 +335,12 @@ class ScreenCapture:
     def _is_image_empty(data: bytes) -> bool:
         """Check if image is completely black or white (often happens on failed Wayland captures)"""
         if not data: return True
-        img = QImage.fromData(data)
-        if img.isNull(): return True
+        return ScreenCapture._is_qimage_empty(QImage.fromData(data))
+
+    @staticmethod
+    def _is_qimage_empty(img: QImage) -> bool:
+        """:meth:`_is_image_empty` on decoded pixels, for the paths that have them."""
+        if img is None or img.isNull(): return True
 
         # Sample a grid of up to 5x5 points. Region captures can be narrower
         # than the grid, so the step count adapts rather than rejecting them.
