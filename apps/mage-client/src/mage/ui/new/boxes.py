@@ -43,7 +43,7 @@ import logging
 from enum import Enum
 
 from PyQt6.QtCore import QObject, QRect, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QPainter, QPen, QRegion
 from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
 from mage.ui.overlay_base import MageOverlayWindow
@@ -57,6 +57,26 @@ __all__ = ["BoxManager", "BoxMode", "BoxState", "TranslationBox", "MAX_BOXES"]
 #: matters here for a harder reason: every live box is a reader, and they share
 #: one engine.
 MAX_BOXES = 5
+
+#: Width of the frame you can actually grab, in pixels.
+#:
+#: A box has to be two contradictory things: a window you can move, resize the
+#: attention of, and delete; and a hole you can click *through*, because the
+#: game underneath is still a game.  The resolution is that only a band around
+#: the edge belongs to the box — wide enough to hit without aiming, and no
+#: wider, because every pixel of it is a pixel of the game you cannot click.
+#:
+#: The 2px border this replaced was, on Windows, the entire interactive
+#: surface of a translation box: a layered window passes input straight
+#: through its fully transparent pixels, so the only thing that could be
+#: hovered or dragged was the drawn line itself.  Boxes were, in the user's
+#: words, unclickable, undraggable and impossible to clear.
+FRAME_BAND = 10
+
+#: Alpha of the band's fill.  Two jobs, and the second is why it cannot be
+#: zero: it shows you what you can grab, and on Windows a pixel with no alpha
+#: at all is a pixel the mouse never reaches.
+BAND_ALPHA = 46
 
 
 class BoxMode(Enum):
@@ -119,9 +139,40 @@ class TranslationBox(MageOverlayWindow):
 
         self._toolbar = _BoxToolbar(self)
         self._toolbar.hide()
+        self._toolbar.set_mode(mode)
         self._toolbar.mode_clicked.connect(self._cycle_mode)
         self._toolbar.delete_clicked.connect(lambda: self.delete_requested.emit(self))
         self.setMouseTracking(True)
+        self._refresh_mask()
+
+    # ── what belongs to the box, and what belongs to the game ────────
+
+    def _refresh_mask(self) -> None:
+        """Keep the middle of the box out of the window entirely.
+
+        Masking rather than painting-nothing, because the two platforms
+        disagree about what a transparent pixel means: X11 hands the click to
+        whatever is on top regardless of what it drew, so without this the box
+        swallows every click aimed at the game inside it.  The toolbar is
+        united back in while it is showing, or the mask would clip the very
+        controls it exists to reveal.
+        """
+        outer = self.rect()
+        region = QRegion(outer)
+        inner = outer.adjusted(FRAME_BAND, FRAME_BAND, -FRAME_BAND, -FRAME_BAND)
+        if inner.width() > 0 and inner.height() > 0:
+            region = region.subtracted(QRegion(inner))
+        if self._toolbar.isVisible():
+            region = region.united(QRegion(self._toolbar.geometry()))
+        self.setMask(region)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_mask()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_mask()
 
     # ── mode and state ───────────────────────────────────────────────
 
@@ -161,10 +212,12 @@ class TranslationBox(MageOverlayWindow):
     def enterEvent(self, event):
         self._toolbar.move(4, 4)
         self._toolbar.show()
+        self._refresh_mask()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._toolbar.hide()
+        self._refresh_mask()
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -187,9 +240,26 @@ class TranslationBox(MageOverlayWindow):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         color = _STATE_COLORS.get(self.state, _MODE_COLORS[self.mode])
+
+        # The grabbable band, drawn as the frame it is.  Painted rather than
+        # left clear because on Windows an unpainted pixel is one the mouse
+        # passes through, and a frame nobody can hit is a box nobody can move
+        # or delete.
+        band = QColor(color)
+        band.setAlpha(BAND_ALPHA)
+        outer = self.rect()
+        inner = outer.adjusted(FRAME_BAND, FRAME_BAND, -FRAME_BAND, -FRAME_BAND)
+        frame = QRegion(outer)
+        if inner.width() > 0 and inner.height() > 0:
+            frame = frame.subtracted(QRegion(inner))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setClipRegion(frame)
+        painter.fillRect(outer, band)
+        painter.setClipping(False)
+
         painter.setPen(QPen(color, 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 6, 6)
+        painter.drawRoundedRect(outer.adjusted(1, 1, -2, -2), 6, 6)
 
         if self.mode is BoxMode.IGNORE:
             # Hatched, so an Ignore box does not read as a translation box
@@ -351,6 +421,13 @@ class BoxManager(QObject):
         for box in list(self.boxes):
             self.remove_box(box)
 
+    def box(self, box_id: str) -> "TranslationBox | None":
+        """The box with this id, for controls that live somewhere else."""
+        for box in self.boxes:
+            if box.box_id == box_id:
+                return box
+        return None
+
     def overlays(self) -> list:
         """The painted overlays, for the keep-on-top tick.
 
@@ -375,6 +452,9 @@ class BoxManager(QObject):
     def _on_mode_changed(self, box: TranslationBox) -> None:
         self._sync_box(box)
         self.save()
+        # The orb's row names each box's mode, and a mode changed from the
+        # box's own toolbar has to reach it.
+        self.boxes_changed.emit()
 
     def _on_moved(self, box: TranslationBox) -> None:
         """A box that moved is bound to the wrong rectangle until it restarts."""
@@ -418,39 +498,78 @@ class BoxManager(QObject):
         translation the user just asked for should not wait for a second look
         at text they can already see.
         """
-        from mage.live_ocr import LiveOcrWorker
-        from mage.settings_keys import KEY_IGNORE_PHRASES, KEY_LIVE_INTERVAL_MS, KEY_SOURCE_LANG, KEY_TARGET_LANG
-        from mage.translation import make_translator
+        from mage.live_engine import resolve_live_engine
+        from mage.settings_keys import (
+            KEY_IGNORE_PHRASES,
+            KEY_LIVE_INTERVAL_MS,
+            KEY_SOURCE_LANG,
+            KEY_TARGET_LANG,
+            LIVE_ENGINE_OCR,
+        )
         from mage.ui.inpaint_overlay import InpaintOverlay
         from shared_types import constants
-        from xian.filters import TextFilter
-        from xian.text_gate import SettleGate
 
         overlay = InpaintOverlay()
         overlay.bind_to_rect(rect)
         overlay.show()
 
         settings = self.app.settings
-        worker = LiveOcrWorker(
-            self.app.processor,
-            rect,
+        common = dict(
             frame_stream=self._stream_for(rect),
-            engine=self.engine(),
-            translator=make_translator(settings, self.app.processor),
-            text_filter=TextFilter.from_settings(settings.value(KEY_IGNORE_PHRASES, "")),
-            exclude_regions=[r for r in self.exclude_regions() if r != rect],
             source_lang=settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG),
             target_lang=settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG),
             interval_ms=int(settings.value(KEY_LIVE_INTERVAL_MS, constants.DEFAULT_LIVE_INTERVAL_MS)),
             session_recorder=self._record,
-            gate=SettleGate(settle_seconds=0.0) if settle_now else None,
         )
+
+        # Whichever engine the settings ask for, and can actually have.  The
+        # boxes used to build an OCR reader whatever was chosen, so a machine
+        # that had never run ``scripts/export_ppocr_onnx.py`` — which is every
+        # machine until someone does — had every box fail on its first read
+        # while the settings screen said something else entirely.
+        if resolve_live_engine(settings) == LIVE_ENGINE_OCR:
+            from mage.live_ocr import LiveOcrWorker
+            from mage.translation import make_translator
+            from xian.filters import TextFilter
+            from xian.text_gate import SettleGate
+
+            worker = LiveOcrWorker(
+                self.app.processor,
+                rect,
+                engine=self.engine(),
+                translator=make_translator(settings, self.app.processor),
+                text_filter=TextFilter.from_settings(settings.value(KEY_IGNORE_PHRASES, "")),
+                exclude_regions=[r for r in self.exclude_regions() if r != rect],
+                gate=SettleGate(settle_seconds=0.0) if settle_now else None,
+                **common,
+            )
+        else:
+            from mage.live_lens import LiveLensWorker
+
+            worker = LiveLensWorker(self.app.processor, rect, **common)
+
         worker.regions_ready.connect(
             lambda regions, served, scale, ov=overlay, b=box: self._on_regions(ov, b, regions, served, scale)
         )
-        if box is not None:
-            worker.error.connect(lambda message, b=box: b.set_state(BoxState.FAILED))
+        worker.error.connect(lambda message, b=box: self._on_worker_error(b, message))
         return worker, overlay
+
+    def _on_worker_error(self, box, message: str) -> None:
+        """Say what went wrong, where the user is already looking.
+
+        A box that could not read has only ever turned its border red, and the
+        reason went to a log nobody has open — so the commonest first-run
+        failure of all, weights that were never exported, looked exactly like
+        a feature that does nothing.  The message these raise says what to
+        run; it needs somewhere to be read.
+        """
+        logger.error("live box %s: %s", getattr(box, "box_id", "one-off"), message)
+        if box is not None:
+            box.set_state(BoxState.FAILED)
+            box.setToolTip(message)
+        shell = getattr(self.app, "_shell", None)
+        if shell is not None:
+            shell.on_error(message)
 
     def _record(self, original: str, translated: str) -> None:
         """Into session memory, and into the orb's log if there is one."""

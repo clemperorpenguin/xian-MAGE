@@ -317,3 +317,83 @@ def test_stacked_boxes_are_suppressed_before_painting():
     regions = run(Worker(engine, translator))
 
     assert len(regions) == 1
+
+
+# ── which engine actually runs ───────────────────────────────────────
+
+class _FakeSettings:
+    def __init__(self, values=None):
+        self._values = values or {}
+
+    def value(self, key, default=None):
+        return self._values.get(key, default)
+
+
+def test_the_vision_model_is_never_second_guessed(monkeypatch):
+    """It needs nothing exported, so there is nothing to check."""
+    from mage import live_engine
+    from mage.settings_keys import KEY_LIVE_ENGINE, LIVE_ENGINE_GROUNDING
+
+    monkeypatch.setattr(live_engine, "ocr_models_ready", lambda s: False)
+    settings = _FakeSettings({KEY_LIVE_ENGINE: LIVE_ENGINE_GROUNDING})
+
+    assert live_engine.resolve_live_engine(settings) == LIVE_ENGINE_GROUNDING
+
+
+def test_the_local_reader_is_used_when_its_weights_are_there(monkeypatch):
+    from mage import live_engine
+    from mage.settings_keys import KEY_LIVE_ENGINE, LIVE_ENGINE_OCR
+
+    monkeypatch.setattr(live_engine, "ocr_models_ready", lambda s: True)
+    settings = _FakeSettings({KEY_LIVE_ENGINE: LIVE_ENGINE_OCR})
+
+    assert live_engine.resolve_live_engine(settings) == LIVE_ENGINE_OCR
+
+
+def test_a_reader_with_no_weights_falls_back_rather_than_failing(monkeypatch):
+    """PP-OCRv5 has no published ONNX release, so a fresh install has no
+    weights — and a box that picks the reader anyway fails on its first read,
+    in a worker thread, showing the user nothing but a red border."""
+    from mage import live_engine
+    from mage.settings_keys import KEY_LIVE_ENGINE, LIVE_ENGINE_GROUNDING, LIVE_ENGINE_OCR
+
+    monkeypatch.setattr(live_engine, "ocr_models_ready", lambda s: False)
+    monkeypatch.setattr(live_engine, "_warned", False)
+    settings = _FakeSettings({KEY_LIVE_ENGINE: LIVE_ENGINE_OCR})
+
+    assert live_engine.resolve_live_engine(settings) == LIVE_ENGINE_GROUNDING
+
+
+def test_the_default_is_the_local_reader(monkeypatch):
+    """What the boxes have always actually run."""
+    from mage import live_engine
+    from mage.settings_keys import LIVE_ENGINE_OCR
+
+    monkeypatch.setattr(live_engine, "ocr_models_ready", lambda s: True)
+
+    assert live_engine.resolve_live_engine(_FakeSettings()) == LIVE_ENGINE_OCR
+
+
+def test_a_distribution_host_counts_as_ready(monkeypatch):
+    """Fetching is ensure_model's job; refusing here would fall back for a
+    download that was going to succeed."""
+    from mage import live_engine
+
+    monkeypatch.setenv("XIAN_OCR_BASE_URL", "https://example.invalid/ocr")
+
+    assert live_engine.ocr_models_ready(_FakeSettings()) is True
+
+
+def test_readiness_checks_the_recognizer_for_the_chosen_language(monkeypatch):
+    """A machine that exported Chinese and not Korean works for one and not
+    the other, and the check has to know the difference."""
+    from mage import live_engine
+    from mage.settings_keys import KEY_SOURCE_LANG
+
+    monkeypatch.delenv("XIAN_OCR_BASE_URL", raising=False)
+    asked = []
+    monkeypatch.setattr("xian.ocr.models.verify_model", lambda model_id: asked.append(model_id) or True)
+
+    live_engine.ocr_models_ready(_FakeSettings({KEY_SOURCE_LANG: "Korean"}))
+
+    assert any("korean" in model_id for model_id in asked), asked

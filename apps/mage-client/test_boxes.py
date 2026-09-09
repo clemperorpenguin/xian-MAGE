@@ -385,3 +385,50 @@ def test_a_live_box_keeps_its_session_across_a_restart(manager, fake_streams):
 
     assert fake_streams.opened[0].stopped is False
     assert manager._streams != {}
+
+
+# ── reachable without hitting them ───────────────────────────────────
+
+def test_the_middle_of_a_box_is_not_part_of_the_window(manager):
+    """The game inside a box is still a game: clicks aimed at it must not be
+    swallowed by the frame drawn around it."""
+    from mage.ui.new.boxes import FRAME_BAND
+
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+    box.show()
+
+    mask = box.mask()
+
+    assert not mask.isEmpty(), "the frame itself has to stay hittable"
+    assert not mask.contains(QRect(200, 150, 1, 1)), "the middle belongs to the game"
+    assert mask.contains(QRect(1, 1, 1, 1)), "the top-left corner is frame"
+    assert mask.contains(QRect(0, FRAME_BAND - 1, 1, 1)), "the band is FRAME_BAND deep"
+
+
+def test_the_band_is_wide_enough_to_hit(manager):
+    """A 2px border was the whole interactive surface of a box on Windows,
+    where a layered window passes input through its transparent pixels."""
+    from mage.ui.new.boxes import FRAME_BAND
+
+    assert FRAME_BAND >= 8
+
+
+def test_a_box_can_be_found_by_its_id(manager):
+    """The orb's row addresses boxes by id, because it cannot address them
+    by pointing at them."""
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+
+    assert manager.box(box.box_id) is box
+    assert manager.box("box_nonexistent") is None
+
+
+def test_changing_a_mode_tells_whoever_is_listing_the_boxes(manager):
+    """The orb's row names each box's mode; a mode cycled from the box's own
+    toolbar has to reach it."""
+    box = manager.add_box(QRect(0, 0, 400, 300), BoxMode.OFF)
+    seen = []
+    manager.boxes_changed.connect(lambda: seen.append(True))
+
+    box.set_mode(BoxMode.IGNORE)
+
+    assert seen

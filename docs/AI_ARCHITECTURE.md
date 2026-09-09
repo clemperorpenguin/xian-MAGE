@@ -183,7 +183,7 @@ The client parses this structure using high-performance regular expressions. A s
 
 ### 6. The Second Payload: Local OCR, Then Text-Only Translation
 
-Live mode can run a second lifecycle entirely, chosen in **Settings → Features → Live
+Live mode can run a second lifecycle entirely, chosen in **Settings → Translation → Live
 engine**.  The vision model does not see the frame at all: PP-OCRv5 reads it on this
 machine, and only the recognized text crosses the wire.
 

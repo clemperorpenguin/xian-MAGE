@@ -53,7 +53,7 @@ that ships.
 
 Run §3's items in each cell, then these:
 
-- [ ] 🟢 Settings → Features → **Live engine → Local OCR**, restart live mode; text is
+- [ ] 🟢 Settings → Translation → **Live engine → Local OCR**, restart live mode; text is
       read and painted with no vision model loaded on the server.
 - [ ] 🟢 First run with no exported models gives an actionable message naming
       `scripts/export_ppocr_onnx.py`, not a crash.
@@ -72,7 +72,7 @@ Run §3's items in each cell, then these:
 
 ## 3c. The new UI
 
-- [ ] 🟢 Settings → Features → **Use the new interface**, restart; the orb appears and the
+- [ ] 🟢 the orb appears on launch and the
       command OSD does not.
 - [ ] 🟢 Double-tapping the leader key does **nothing**. Double-tapping the overlay-toggle
       key still hides every overlay — including from inside a fullscreen game.

@@ -202,6 +202,8 @@ class _Publisher(LiveLensWorker):
         self._carry = []
         self.rect = None
         self._served_rect = None
+        self._last_error = None
+        self._failures = 0
         self.errors = []
         self.emitted = []
 
@@ -432,3 +434,42 @@ def test_unchanged_text_keeps_the_wording_it_already_had():
     worker._publish([TextRegion((11, 11, 99, 39), "前往", "Head over")], frame)
 
     assert [r.translated for r in worker.emitted[-1][0]] == ["Go"]
+
+
+# ── a loop that cannot succeed ───────────────────────────────────────
+
+def test_the_same_failure_is_reported_once_not_every_tick():
+    """A missing model does not fix itself between ticks, and a thousand
+    copies of the message bury the one the user needed."""
+    from mage.live_common import MAX_INFERENCE_FAILURES
+
+    worker = _Publisher()
+
+    for _ in range(MAX_INFERENCE_FAILURES - 1):
+        assert worker._note_failure("PP-OCRv5_mobile_det is not in the catalog") is False
+
+    assert len(worker.errors) == 1
+
+
+def test_a_loop_that_keeps_failing_the_same_way_gives_up():
+    """Capture, read, fail, several times a second, forever: the game pays
+    for it and the user learns nothing new."""
+    from mage.live_common import MAX_INFERENCE_FAILURES
+
+    worker = _Publisher()
+
+    verdicts = [worker._note_failure("no such model") for _ in range(MAX_INFERENCE_FAILURES)]
+
+    assert verdicts[-1] is True
+    assert verdicts[:-1] == [False] * (MAX_INFERENCE_FAILURES - 1)
+    assert len(worker.errors) == 2, "the first failure, and the one that says it stopped"
+
+
+def test_a_different_failure_is_reported_again():
+    """Two different problems are two things the user has to know about."""
+    worker = _Publisher()
+
+    worker._note_failure("connection refused")
+    worker._note_failure("model not found")
+
+    assert len(worker.errors) == 2

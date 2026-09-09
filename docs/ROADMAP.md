@@ -85,7 +85,7 @@ The honest state of Ryzen AI on Linux, as of Lemonade v10:
 * **What works today.** Lemonade serves NPU models through the FastFlowLM (`flm`) recipe,
   which covers text LLMs, Whisper ASR, and embeddings. Chat, translation, session
   summarization, and raid-mode speech can all be routed there via
-  **Settings → Backend → Inference backend**. Run `./mage.sh --doctor-npu` to check the
+  **Settings → Server → Inference backend**. Run `./mage.sh --doctor-npu` to check the
   prerequisites.
 * **What does not exist.** There is no NPU *vision* backend on Linux, so the VLM — and
   therefore OCR — stays on the GPU. Routing text work to the NPU frees the GPU; it does
@@ -102,7 +102,7 @@ The honest state of Ryzen AI on Linux, as of Lemonade v10:
 ### 3. Live In-Place Translation — ✅ shipped (both paths)
 The **Live** lens action continuously translates a locked region and paints each
 translation over the original text — Google Lens / DeepL style — instead of showing a
-bubble beside it.  Two engines drive it, chosen in **Settings → Features → Live engine**.
+bubble beside it.  Two engines drive it, chosen in **Settings → Translation → Live engine**.
 
 **Vision model** (default). One call detects, reads and translates together.
 

@@ -34,6 +34,8 @@ import logging
 
 from PyQt6.QtCore import QObject
 
+from shared_types.state import t
+
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,9 @@ class Shell(QObject):
 
     def on_translation(self, original: str, translated: str) -> None:
         """A line was translated somewhere; show it if this shell has a place."""
+
+    def on_error(self, message: str) -> None:
+        """Something the user asked for failed; put the reason in front of them."""
 
     def teardown(self) -> None:
         """Release anything the shell owns."""
@@ -90,9 +95,14 @@ class NewShell(Shell):
         self.panel.translate_once_requested.connect(self.translate_once)
         self.panel.settings_requested.connect(app._open_settings)
         self.panel.notes_requested.connect(app.toggle_notes)
+        self.panel.box_mode_cycled.connect(self._cycle_box_mode)
+        self.panel.box_removed.connect(self._remove_box_by_id)
+        self.panel.boxes_cleared.connect(self.boxes.clear)
+        self.boxes.boxes_changed.connect(self._refresh_boxes)
 
         self.boxes.load()
         self.boxes.start_all()
+        self._refresh_boxes()
         self.orb.show()
 
     # ── boxes ────────────────────────────────────────────────────────
@@ -115,6 +125,25 @@ class NewShell(Shell):
         self._picker.confirmed.connect(self._on_boxes_drawn)
         self._picker.closed.connect(self._on_picker_closed)
         self._picker.showFullScreen()
+
+    def _refresh_boxes(self) -> None:
+        """Mirror the boxes into the panel, so none of them is unreachable."""
+        from mage.ui.new.boxes import BoxMode  # noqa: F401  (mode labels are keyed)
+
+        self.panel.set_boxes([
+            (box.box_id, str(index + 1), t(f"newui.box.mode.{box.mode.value}"))
+            for index, box in enumerate(self.boxes.boxes)
+        ])
+
+    def _cycle_box_mode(self, box_id: str) -> None:
+        box = self.boxes.box(box_id)
+        if box is not None:
+            box.set_mode(box.mode.next())
+
+    def _remove_box_by_id(self, box_id: str) -> None:
+        box = self.boxes.box(box_id)
+        if box is not None:
+            self.boxes.remove_box(box)
 
     def _on_boxes_drawn(self, rects) -> None:
         for rect in rects:
@@ -153,6 +182,15 @@ class NewShell(Shell):
 
     def on_translation(self, original: str, translated: str) -> None:
         self.panel.add_translation(original, translated)
+
+    def on_error(self, message: str) -> None:
+        """Into the log and onto the orb.
+
+        The panel is the record — it is still there when the user opens it
+        later — and the orb is what they can see without opening anything.
+        """
+        self.panel.add_message("mage", message)
+        self.orb.set_failed(message)
 
     # ── chat ─────────────────────────────────────────────────────────
 

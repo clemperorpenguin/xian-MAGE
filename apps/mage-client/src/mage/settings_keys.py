@@ -16,10 +16,40 @@
 #
 # Contact: clem@pendragon.systems (Clementine Pendragon, c/o Xian Project Development)
 
-"""Canonical QSettings keys for the Mage client.
+"""Canonical QSettings keys for the Mage client, and how to read them.
 
-Centralizes key names to avoid typos and drift across files.
+Centralizes key names to avoid typos and drift across files.  The few readers
+that live here too are the ones whose *interpretation* has to be shared — a
+boolean QSettings stores as a string on one platform and a bool on another, a
+URL that has to be normalised the same way everywhere.
 """
+
+from shared_types import constants
+
+
+def normalized_api_url_from_settings(settings) -> str:
+    """The Lemonade base URL as stored, put in canonical form.
+
+    Beside the keys rather than beside its callers because there are five of
+    them, in three modules, and a URL normalised on the way in but not on the
+    way out is a health check that passes against a server the requests never
+    reach.
+    """
+    from xian.lemonade_url import normalize_lemonade_api_base_url
+
+    return normalize_lemonade_api_base_url(str(settings.value(KEY_API_URL, constants.DEFAULT_API_URL)))
+
+
+def parse_styles(settings) -> list[str]:
+    """The saved translation styles as a list.
+
+    QSettings hands back a list on one platform and a comma-joined string on
+    another; every reader has to accept both.
+    """
+    raw = settings.value(KEY_STYLES, constants.DEFAULT_STYLES)
+    if isinstance(raw, str):
+        return [style.strip() for style in raw.split(",") if style.strip()]
+    return raw if isinstance(raw, list) else []
 
 
 def is_true(value) -> bool:
@@ -70,7 +100,12 @@ KEY_EXPERIMENTAL_LIVE = "experimental_live_mode"
 KEY_LIVE_ENGINE = "live_engine"
 LIVE_ENGINE_GROUNDING = "grounding"
 LIVE_ENGINE_OCR = "ocr"
-DEFAULT_LIVE_ENGINE = LIVE_ENGINE_GROUNDING
+#: The local reader, which is what the translation boxes were built around and
+#: what they have always run whatever this said.  It falls back to the vision
+#: model on a machine whose weights are not exported — see
+#: :mod:`mage.live_engine` — so this default costs an unprepared machine
+#: nothing.
+DEFAULT_LIVE_ENGINE = LIVE_ENGINE_OCR
 
 # Detection model for the OCR engine: PP-OCRv5_mobile_det or _server_det.
 KEY_OCR_DETECTOR = "ocr_detector"
