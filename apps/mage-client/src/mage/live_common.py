@@ -59,6 +59,7 @@ import time
 import imagehash
 from PIL import Image
 from PyQt6.QtCore import QRect, QThread, pyqtSignal
+from shared_types.state import t
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ __all__ = [
     "DEFAULT_INTERVAL_MS",
     "LIVE_HASH_SIZE",
     "MAX_CAPTURE_FAILURES",
+    "MAX_INFERENCE_FAILURES",
     "PAINT_MASK_PADDING",
     "REGION_CHANGE_THRESHOLD",
     "REGION_COMPARE_SIZE",
@@ -129,6 +131,24 @@ DEFAULT_INTERVAL_MS = 700
 
 #: Consecutive capture failures tolerated before giving up.
 MAX_CAPTURE_FAILURES = 5
+
+#: Consecutive *identical* inference failures tolerated before giving up.
+#:
+#: A missing model, a model that will not load, a backend that is not running:
+#: none of these fix themselves between ticks, and a box grinding through
+#: capture-read-fail several times a second costs the game frames to learn
+#: nothing.  Deliberately larger than the capture allowance — a backend
+#: restarting mid-session is worth waiting out.
+MAX_INFERENCE_FAILURES = 8
+
+#: How often the loop says what it has been doing, in seconds.
+#:
+#: The overlay is silent by design when it has nothing to paint, which makes
+#: "reading, and there is nothing there" and "not reading at all" look
+#: identical from the outside.  This is the line that tells them apart, and it
+#: is at INFO because the person who needs it is the person who cannot see
+#: their translations.
+REPORT_INTERVAL_SECONDS = 30.0
 
 
 class LiveRegion:
@@ -291,6 +311,17 @@ class LiveWorkerBase(QThread):
         self._last_signature: tuple = ()
         self._warned_untranslated = False
 
+        # The last failure reported, and how many times it has repeated.  Kept
+        # so a broken box says so once rather than every tick.
+        self._last_error: str | None = None
+        self._failures = 0
+
+        # What the loop has done since it last said so.
+        self._tally = dict.fromkeys(
+            ("ticks", "captured", "changed", "translated", "painted"), 0
+        )
+        self._reported_at = 0.0
+
         # Translations from earlier frames, each with a hash of the pixels it
         # was read from. A box whose pixels are unchanged is still showing the
         # same text, so its translation stands without another inference —
@@ -359,9 +390,19 @@ class LiveWorkerBase(QThread):
         interval = self.interval_ms / 1000.0
         failures = 0
         inflight = False
+        self._reported_at = time.monotonic()
+        logger.info(
+            "%s watching %s every %d ms via %s",
+            type(self).__name__,
+            self.rect,
+            self.interval_ms,
+            "continuous capture" if self._frame_stream is not None else "screenshots",
+        )
 
         while self._running:
             started = time.monotonic()
+            self._tally["ticks"] += 1
+            self._report(started)
 
             frame = await asyncio.to_thread(self._grab)
             if frame is None:
@@ -372,6 +413,7 @@ class LiveWorkerBase(QThread):
                 await self._sleep_remainder(started, interval)
                 continue
             failures = 0
+            self._tally["captured"] += 1
 
             current = self._masked_hash(frame)
 
@@ -379,6 +421,7 @@ class LiveWorkerBase(QThread):
                 await self._sleep_remainder(started, interval)
                 continue
 
+            self._tally["changed"] += 1
             self._clean_hash = current
 
             # Whatever is painted was read from an older frame. Re-check each
@@ -386,7 +429,8 @@ class LiveWorkerBase(QThread):
             # the call runs, and text that has gone stops being painted now
             # rather than seconds from now when the call returns.
             self._carry = self._surviving_regions(frame)
-            self._publish([], frame)
+            if self._publish([], frame):
+                self._tally["painted"] += 1
 
             inflight = True
             try:
@@ -395,11 +439,16 @@ class LiveWorkerBase(QThread):
                 logger.warning("Live lens inference timed out; skipping frame")
                 regions = None
             except Exception as exc:
-                logger.warning("Live lens inference failed: %s", exc)
-                self.error.emit(str(exc))
                 regions = None
+                if self._note_failure(str(exc)):
+                    return
             finally:
                 inflight = False
+
+            if regions is not None:
+                self._last_error = None
+                self._failures = 0
+                self._tally["translated"] += 1
 
             if regions is None:
                 # The call failed. The carry is still valid for this frame, so
@@ -407,7 +456,8 @@ class LiveWorkerBase(QThread):
                 # instead of blanking, and they survive into the next tick.
                 self._remember(self._carry, frame)
             else:
-                self._publish(regions, frame)
+                if self._publish(regions, frame):
+                    self._tally["painted"] += 1
                 self._carry = []
                 # The boxes we mask changed with this render, so re-hash the
                 # frame we just translated under the *new* mask. Comparing the
@@ -603,6 +653,53 @@ class LiveWorkerBase(QThread):
         )
         logger.warning("%s", message)
         self.error.emit(message)
+
+    # ── saying what happened ─────────────────────────────────────────
+
+    def _note_failure(self, message: str) -> bool:
+        """Report an inference failure; return True when the loop should stop.
+
+        Two things a polling loop must not do: report the same failure on
+        every tick, and keep failing forever.  The first buries the message
+        the user needed under a thousand copies of itself; the second burns a
+        core reading a screen it can never translate.
+        """
+        if message != self._last_error:
+            self._last_error = message
+            self._failures = 0
+            logger.warning("%s inference failed: %s", type(self).__name__, message)
+            self.error.emit(message)
+
+        self._failures += 1
+        if self._failures < MAX_INFERENCE_FAILURES:
+            return False
+
+        logger.error(
+            "%s stopping after %d identical failures: %s",
+            type(self).__name__, self._failures, message,
+        )
+        self.error.emit(f"{t('live.error.stopped')} {message}")
+        return True
+
+    def _report(self, now: float) -> None:
+        """Log what the loop has been doing, at an interval.
+
+        Written as counts rather than events because the useful question is
+        which stage the frames stop at: captured but never changed is a gate
+        problem, changed but never translated is the engine, translated but
+        never repainted is the overlay.
+        """
+        if now - self._reported_at < REPORT_INTERVAL_SECONDS:
+            return
+        self._reported_at = now
+        logger.info(
+            "%s: %d ticks, %d captured, %d changed, %d translated, %d repainted",
+            type(self).__name__,
+            self._tally["ticks"], self._tally["captured"], self._tally["changed"],
+            self._tally["translated"], self._tally["painted"],
+        )
+        for key in self._tally:
+            self._tally[key] = 0
 
     def _capture_scale(self, frame: Image.Image) -> float:
         """Capture pixels per logical pixel, measured from the frame itself."""

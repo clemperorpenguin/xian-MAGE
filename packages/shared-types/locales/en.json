@@ -874,5 +874,105 @@
   "newui.orb.tooltip.translate_once": {
     "value": "Drag over anything on screen to translate it once. The translation fades on its own and no box is left behind.",
     "context": "Tooltip explaining the one-off translation gesture"
+  },
+  "live.error.stopped": {
+    "value": "This box stopped translating after repeated failures:",
+    "context": "Prefix shown once a live translation box has given up; the underlying error message follows it"
+  },
+  "newui.orb.label.boxes": {
+    "value": "Boxes",
+    "context": "Label in front of the row of translation boxes in the orb panel"
+  },
+  "newui.orb.label.no_boxes": {
+    "value": "No boxes yet",
+    "context": "Shown in place of the boxes label when no translation boxes have been placed"
+  },
+  "newui.orb.button.clear_boxes": {
+    "value": "Clear all",
+    "context": "Button that deletes every translation box"
+  },
+  "newui.orb.tooltip.clear_boxes": {
+    "value": "Remove every translation box from the screen",
+    "context": "Tooltip for the clear-all-boxes button"
+  },
+  "newui.orb.tooltip.cycle_mode": {
+    "value": "Click to change this box's mode: Live, Once, Ignore, Off",
+    "context": "Tooltip on a box chip in the orb panel"
+  },
+  "newui.orb.tooltip.remove_box": {
+    "value": "Delete this box",
+    "context": "Tooltip on the remove button beside a box chip"
+  },
+  "settings.tab.translation": {
+    "value": "Translation",
+    "context": "Settings tab holding languages, the translation model and the live reader"
+  },
+  "settings.tab.overlay": {
+    "value": "Overlay",
+    "context": "Settings tab holding what the overlay looks like and where its windows sit"
+  },
+  "settings.tab.server": {
+    "value": "Server",
+    "context": "Settings tab holding the Lemonade server address and hardware options"
+  },
+  "settings.tab.assistant": {
+    "value": "Assistant",
+    "context": "Settings tab holding session memory, voice and the familiar"
+  },
+  "settings.tab.advanced": {
+    "value": "Advanced",
+    "context": "Settings tab holding hotkeys and developer options"
+  },
+  "settings.heading.languages": {
+    "value": "Languages",
+    "context": "Section heading above the source and target language settings"
+  },
+  "settings.heading.live_translation": {
+    "value": "Live translation",
+    "context": "Section heading above the settings for continuously translating a region"
+  },
+  "settings.heading.behaviour": {
+    "value": "Behaviour",
+    "context": "Section heading above optional translation behaviours"
+  },
+  "settings.heading.appearance": {
+    "value": "Appearance",
+    "context": "Section heading above overlay opacity, text size and interface language"
+  },
+  "settings.heading.placement": {
+    "value": "Placement",
+    "context": "Section heading above layout presets and the window the overlay follows"
+  },
+  "settings.heading.connection": {
+    "value": "Connection",
+    "context": "Section heading above the server address and model settings"
+  },
+  "settings.heading.hardware": {
+    "value": "Hardware",
+    "context": "Section heading above GPU, NPU and token-budget settings"
+  },
+  "settings.heading.memory": {
+    "value": "Memory",
+    "context": "Section heading above the session memory settings"
+  },
+  "settings.heading.voice": {
+    "value": "Voice",
+    "context": "Section heading above speech and audio settings"
+  },
+  "settings.heading.familiar": {
+    "value": "Familiar",
+    "context": "Section heading above the desktop familiar settings"
+  },
+  "settings.heading.hotkeys": {
+    "value": "Hotkeys",
+    "context": "Section heading above keyboard shortcut settings"
+  },
+  "settings.heading.developer": {
+    "value": "Developer",
+    "context": "Section heading above developer-only options"
+  },
+  "settings.tooltip.overlay_toggle_key": {
+    "value": "Double-tap this key to hide or show every overlay — the way back when a fullscreen game holds the pointer",
+    "context": "Tooltip explaining the overlay toggle hotkey"
   }
 }

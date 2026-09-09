@@ -29,20 +29,14 @@ import os
 import time
 
 from PyQt6.QtWidgets import (
-    QApplication, QSystemTrayIcon, QMenu, QDialog, QFormLayout,
-    QLineEdit, QComboBox, QSpinBox, QPushButton, QLabel, QVBoxLayout,
-    QHBoxLayout, QWidget, QCheckBox, QMessageBox, QInputDialog, QTabWidget, QSlider,
-    QPlainTextEdit,
-    QFileDialog
+    QApplication, QSystemTrayIcon, QMenu, QWidget, QMessageBox, QFileDialog
 )
-from PyQt6.QtCore import Qt, QSettings, QRect, QTimer, QStandardPaths, pyqtSignal
+from PyQt6.QtCore import Qt, QSettings, QRect, QTimer, QStandardPaths
 from PyQt6.QtGui import QIcon, QCursor, QColor
 
-from mage.ui.theme import accent_hex, accent_hover_hex
 
 from xian.pipeline import VLProcessor, VLConfig
 from xian.collections import (
-    COLLECTIONS,
     build_pull_body,
     collection_for_name,
     get_collection,
@@ -63,22 +57,21 @@ from mage.capture.mouse import create_mouse_listener
 from mage.capture.screen import ScreenCapture
 from mage.capture.audio import play_audio_async, SerialAudioPlayer
 from xian.dictionary import LocalDictionary
-from xian.lemonade_url import normalize_lemonade_api_base_url, should_warn_http_to_non_loopback
 from mage.ui.notes_sidebar import NotesSidebar
 from shared_types import constants
-from shared_types.enums import SourceLanguage, TargetLanguage, TranslationMode, TranslationStyle
 from mage.settings_keys import (
-    KEY_API_URL, KEY_API_MODEL, KEY_SOURCE_LANG, KEY_TARGET_LANG,
-    KEY_MODE, KEY_STYLES, KEY_MAX_TOKENS, KEY_LEADER_KEY, KEY_OVERLAY_TOGGLE_KEY,
-    KEY_GPU_UTIL, KEY_DIALOGUE_DELAY,
+    KEY_API_MODEL, KEY_SOURCE_LANG, KEY_TARGET_LANG,
+    KEY_MODE, KEY_MAX_TOKENS, KEY_LEADER_KEY, KEY_OVERLAY_TOGGLE_KEY,
+    KEY_DIALOGUE_DELAY,
     KEY_AUTO_CONTINUE, KEY_AUTO_SPEAK, KEY_TARGET_WINDOW_TITLE, KEY_UI_LANG,
     KEY_FAMILIAR_ENABLED, KEY_FAMILIAR_TTS, KEY_FAMILIAR_TYPE,
     KEY_FAMILIAR_CUSTOM_RECIPE, KEY_MEMORY_ENABLED, KEY_MEMORY_RETENTION_DAYS,
     KEY_BACKEND_PREFERENCE, KEY_NPU_POWER_MODE, KEY_LIVE_INTERVAL_MS,
-    KEY_COLLECTION_TIER, KEY_EXPERIMENTAL_LIVE, KEY_LIVE_ENGINE,
-    KEY_OCR_DETECTOR, KEY_IGNORE_PHRASES, KEY_TRANSLATION_MODEL,
-    DEFAULT_LIVE_ENGINE, LIVE_ENGINE_GROUNDING, LIVE_ENGINE_OCR, is_true,
+    KEY_COLLECTION_TIER, KEY_EXPERIMENTAL_LIVE, KEY_GPU_UTIL,
+    KEY_IGNORE_PHRASES, KEY_OCR_DETECTOR,
+    LIVE_ENGINE_OCR, is_true, normalized_api_url_from_settings, parse_styles,
 )
+from mage.ui.settings_dialog import SettingsDialog
 from mage.utils.window_binder import WindowBinder
 from shared_types.state import state, t
 
@@ -87,575 +80,6 @@ logger = logging.getLogger(__name__)
 ORGANIZATION = constants.ORGANIZATION_NAME
 APP_NAME = constants.APPLICATION_NAME
 MAX_AUTO_CONTINUES = 5
-
-
-def _normalized_api_url_from_settings(settings: QSettings) -> str:
-    return normalize_lemonade_api_base_url(str(settings.value(KEY_API_URL, constants.DEFAULT_API_URL)))
-
-
-def _parse_styles(settings: QSettings) -> list[str]:
-    """Parse the styles QSettings value into a clean list of strings."""
-    raw = settings.value(KEY_STYLES, constants.DEFAULT_STYLES)
-    if isinstance(raw, str):
-        return [s.strip() for s in raw.split(",") if s.strip()]
-    return raw if isinstance(raw, list) else []
-
-
-class SettingsDialog(QDialog):
-    """Small modal dialog for configuring the Lemonade backend."""
-    
-    layout_edit_requested = pyqtSignal()
-
-    #: Set on save when the collection tier changed, so the caller installs it.
-    tier_changed = False
-
-    def __init__(self, settings: QSettings, models: list, parent=None, app=None):
-        super().__init__(parent)
-        self.setWindowTitle(t("settings.dialog.title"))
-        self.setMinimumWidth(450)
-        self.settings = settings
-        self.app = app
-
-        main_layout = QVBoxLayout(self)
-        self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs)
-
-        # Tab: General
-        general_tab = QWidget()
-        general_layout = QFormLayout(general_tab)
-
-        self.ui_lang_combo = QComboBox()
-        self.ui_lang_combo.addItems(["en", "zh", "ja", "ko", "ru", "es", "ar", "hi", "vi"])
-        self.ui_lang_combo.setCurrentText(settings.value(KEY_UI_LANG, "en"))
-        general_layout.addRow(t("settings.label.ui_language"), self.ui_lang_combo)
-
-        self.target_window_combo = QComboBox()
-        self.target_window_combo.setEditable(True)
-        self.target_window_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.target_window_combo.addItem(t("settings.option.none_overlay"), "")
-        try:
-            titles = WindowBinder.get_active_window_titles()
-            for title in titles:
-                self.target_window_combo.addItem(title, title)
-        except Exception as e:
-            logger.error("Could not fetch active window titles: %s", e)
-            
-        current_title = settings.value(KEY_TARGET_WINDOW_TITLE, "")
-        if current_title:
-            idx = self.target_window_combo.findData(current_title)
-            if idx >= 0:
-                self.target_window_combo.setCurrentIndex(idx)
-            else:
-                self.target_window_combo.addItem(current_title, current_title)
-                self.target_window_combo.setCurrentText(current_title)
-        else:
-            self.target_window_combo.setCurrentIndex(0)
-        general_layout.addRow(t("settings.label.target_window_title"), self.target_window_combo)
-
-        preset_layout = QHBoxLayout()
-        self.preset_combo = QComboBox()
-        presets = self.settings.value("layout_presets_list", ["Default"])
-        if not isinstance(presets, list):
-            presets = ["Default"]
-        self.preset_combo.addItems(presets)
-        current_preset = self.settings.value("layout_preset", "Default")
-        idx = self.preset_combo.findText(current_preset)
-        if idx >= 0:
-            self.preset_combo.setCurrentIndex(idx)
-            
-        self.add_preset_btn = QPushButton("+")
-        self.add_preset_btn.setFixedWidth(30)
-        self.add_preset_btn.clicked.connect(self._add_preset)
-        
-        self.del_preset_btn = QPushButton("-")
-        self.del_preset_btn.setFixedWidth(30)
-        self.del_preset_btn.clicked.connect(self._del_preset)
-        
-        self.edit_layout_btn = QPushButton(t("settings.button.edit_layout"))
-        self.edit_layout_btn.clicked.connect(self._on_edit_layout)
-        
-        preset_layout.addWidget(self.preset_combo)
-        preset_layout.addWidget(self.add_preset_btn)
-        preset_layout.addWidget(self.del_preset_btn)
-        preset_layout.addWidget(self.edit_layout_btn)
-        general_layout.addRow(t("settings.label.layout_preset"), preset_layout)
-
-        self.tabs.addTab(general_tab, "General")
-
-        # Tab: Backend
-        backend_tab = QWidget()
-        backend_layout = QFormLayout(backend_tab)
-
-        self.url_edit = QLineEdit()
-        self.url_edit.setText(_normalized_api_url_from_settings(settings))
-        backend_layout.addRow(t("settings.label.server_url"), self.url_edit)
-
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
-        if models:
-            self.model_combo.addItems(models)
-        self.model_combo.setCurrentText(settings.value(KEY_API_MODEL, constants.DEFAULT_MODEL))
-        backend_layout.addRow(t("settings.label.model"), self.model_combo)
-
-        # Which Xian collection to install. Picking one here re-registers it and
-        # points the model above at it; the model field stays editable for
-        # anyone who would rather drive a model of their own choosing.
-        self.tier_combo = QComboBox()
-        for tier, collection in COLLECTIONS.items():
-            label = f"{t(f'settings.option.collection.{tier.value}')} — {collection.size_gb:.1f} GB"
-            self.tier_combo.addItem(label, tier.value)
-        self._initial_tier = settings.value(KEY_COLLECTION_TIER, constants.DEFAULT_COLLECTION_TIER)
-        tier_idx = self.tier_combo.findData(self._initial_tier)
-        if tier_idx >= 0:
-            self.tier_combo.setCurrentIndex(tier_idx)
-        self.tier_combo.setToolTip(t("settings.tooltip.collection_tier"))
-        backend_layout.addRow(t("settings.label.collection_tier"), self.tier_combo)
-
-        self.tokens_spin = QSpinBox()
-        self.tokens_spin.setRange(256, 32768)
-        self.tokens_spin.setValue(int(settings.value(KEY_MAX_TOKENS, constants.DEFAULT_MAX_TOKENS)))
-        backend_layout.addRow(t("settings.label.max_tokens"), self.tokens_spin)
-
-        self.gpu_combo = QComboBox()
-        self.gpu_combo.addItems(["Default", "0.5", "0.75"])
-        self.gpu_combo.setCurrentText(settings.value(KEY_GPU_UTIL, constants.DEFAULT_GPU_MEMORY_UTILIZATION))
-        backend_layout.addRow(t("settings.label.gpu_memory_utilization"), self.gpu_combo)
-
-        # Accelerator choice. Only text and speech can move to the NPU — the
-        # vision model always runs on the GPU, so this never affects OCR speed.
-        self.backend_combo = QComboBox()
-        for pref in constants.BACKEND_PREFERENCES:
-            self.backend_combo.addItem(t(f"settings.option.backend.{pref}"), pref)
-        b_idx = self.backend_combo.findData(
-            settings.value(KEY_BACKEND_PREFERENCE, constants.DEFAULT_BACKEND_PREFERENCE)
-        )
-        if b_idx >= 0:
-            self.backend_combo.setCurrentIndex(b_idx)
-        self.backend_combo.setToolTip(t("settings.tooltip.backend_preference"))
-        backend_layout.addRow(t("settings.label.backend_preference"), self.backend_combo)
-
-        self.npu_power_combo = QComboBox()
-        for mode in constants.NPU_POWER_MODES:
-            self.npu_power_combo.addItem(t(f"settings.option.npu_power.{mode}"), mode)
-        p_idx = self.npu_power_combo.findData(
-            settings.value(KEY_NPU_POWER_MODE, constants.DEFAULT_NPU_POWER_MODE)
-        )
-        if p_idx >= 0:
-            self.npu_power_combo.setCurrentIndex(p_idx)
-        npu_available = bool(app and app.processor.router.npu_available())
-        self.npu_power_combo.setEnabled(npu_available)
-        if not npu_available:
-            self.npu_power_combo.setToolTip(t("settings.tooltip.npu_unavailable"))
-        backend_layout.addRow(t("settings.label.npu_power_mode"), self.npu_power_combo)
-
-        self.tabs.addTab(backend_tab, "Backend")
-
-        # Tab: Translation
-        trans_tab = QWidget()
-        trans_layout = QFormLayout(trans_tab)
-
-        self.source_lang_combo = QComboBox()
-        self.source_lang_combo.addItems([e.value for e in SourceLanguage])
-        self.source_lang_combo.setCurrentText(settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG))
-        trans_layout.addRow(t("settings.label.source_language"), self.source_lang_combo)
-
-        self.lang_combo = QComboBox()
-        self.lang_combo.addItems([e.value for e in TargetLanguage])
-        self.lang_combo.setCurrentText(settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG))
-        trans_layout.addRow(t("settings.label.target_language"), self.lang_combo)
-
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems([e.value for e in TranslationMode])
-        self.mode_combo.setCurrentText(settings.value(KEY_MODE, constants.DEFAULT_MODE))
-        trans_layout.addRow(t("settings.label.mode"), self.mode_combo)
-
-        # Text translation is Hy-MT2 or nothing: the prompts are its own
-        # published instruction formats and the pipeline is shaped around it,
-        # so the choice here is which size, not which model.
-        from xian.translate import TRANSLATION_MODEL, TRANSLATION_MODELS
-
-        self.translation_model_combo = QComboBox()
-        for model_id in TRANSLATION_MODELS:
-            self.translation_model_combo.addItem(t(f"settings.option.translation_model.{model_id}"), model_id)
-        tm_idx = self.translation_model_combo.findData(
-            settings.value(KEY_TRANSLATION_MODEL, TRANSLATION_MODEL)
-        )
-        if tm_idx >= 0:
-            self.translation_model_combo.setCurrentIndex(tm_idx)
-        self.translation_model_combo.setToolTip(t("settings.tooltip.translation_model"))
-        trans_layout.addRow(t("settings.label.translation_model"), self.translation_model_combo)
-
-        style_layout = QVBoxLayout()
-        self.style_checkboxes = {}
-        saved_styles = _parse_styles(settings)
-        for style in TranslationStyle:
-            cb = QCheckBox(style.value)
-            if style.value in saved_styles:
-                cb.setChecked(True)
-            self.style_checkboxes[style.value] = cb
-            style_layout.addWidget(cb)
-        trans_layout.addRow(t("settings.label.styles"), style_layout)
-
-        self.delay_spin = QSpinBox()
-        self.delay_spin.setRange(100, 10000)
-        self.delay_spin.setSingleStep(100)
-        self.delay_spin.setValue(int(settings.value(KEY_DIALOGUE_DELAY, 1000)))
-        trans_layout.addRow(t("settings.label.dialogue_delay"), self.delay_spin)
-
-        self.tabs.addTab(trans_tab, "Translation")
-
-        # Tab: Features
-        features_tab = QWidget()
-        features_layout = QFormLayout(features_tab)
-        self.features_layout = features_layout
-
-        self.leader_combo = QComboBox()
-        self.leader_combo.addItem(t("leader.double_shift"), "Double-Tap Shift")
-        self.leader_combo.addItem(t("leader.double_ctrl"), "Double-Tap Ctrl")
-        self.leader_combo.addItem(t("leader.double_alt"), "Double-Tap Alt")
-        self.leader_combo.addItem(t("leader.double_super"), "Double-Tap Super")
-        leader_val = settings.value(KEY_LEADER_KEY, constants.DEFAULT_LEADER_KEY)
-        if leader_val == "Shift+Space": leader_val = "Double-Tap Shift"
-        idx = self.leader_combo.findData(leader_val)
-        if idx >= 0:
-            self.leader_combo.setCurrentIndex(idx)
-        features_layout.addRow(t("settings.label.leader_key"), self.leader_combo)
-
-        self.overlay_toggle_combo = QComboBox()
-        self.overlay_toggle_combo.addItem("Right Shift", "rshift")
-        self.overlay_toggle_combo.addItem("Right Ctrl", "rctrl")
-        self.overlay_toggle_combo.addItem("Right Alt", "ralt")
-        self.overlay_toggle_combo.addItem("Super", "super")
-        toggle_val = settings.value(KEY_OVERLAY_TOGGLE_KEY, constants.DEFAULT_OVERLAY_TOGGLE_KEY)
-        t_idx = self.overlay_toggle_combo.findData(toggle_val)
-        if t_idx >= 0:
-            self.overlay_toggle_combo.setCurrentIndex(t_idx)
-        features_layout.addRow(t("settings.label.overlay_toggle_key"), self.overlay_toggle_combo)
-
-        self.auto_continue_cb = QCheckBox(t("settings.checkbox.auto_continue"))
-        auto_val = settings.value(KEY_AUTO_CONTINUE, "false")
-        self.auto_continue_cb.setChecked(is_true(auto_val))
-        features_layout.addRow(self.auto_continue_cb)
-
-        self.auto_speak_cb = QCheckBox(t("settings.checkbox.auto_speak"))
-        speak_val = settings.value(KEY_AUTO_SPEAK, "false")
-        self.auto_speak_cb.setChecked(is_true(speak_val))
-        features_layout.addRow(self.auto_speak_cb)
-
-        experimental_heading = QLabel(t("settings.heading.experimental"))
-        experimental_heading.setStyleSheet("font-weight: bold;")
-        features_layout.addRow(experimental_heading)
-
-        self.experimental_live_cb = QCheckBox(t("settings.checkbox.experimental_live"))
-        self.experimental_live_cb.setToolTip(t("settings.tooltip.experimental_live"))
-        self.experimental_live_cb.setChecked(
-            is_true(settings.value(KEY_EXPERIMENTAL_LIVE, "false"))
-        )
-        features_layout.addRow(self.experimental_live_cb)
-
-        self.live_interval_spin = QSpinBox()
-        self.live_interval_spin.setRange(200, 5000)
-        self.live_interval_spin.setSingleStep(100)
-        self.live_interval_spin.setSuffix(" ms")
-        self.live_interval_spin.setValue(int(settings.value(
-            KEY_LIVE_INTERVAL_MS, constants.DEFAULT_LIVE_INTERVAL_MS
-        )))
-        self.live_interval_spin.setToolTip(t("settings.tooltip.live_interval"))
-        features_layout.addRow(t("settings.label.live_interval"), self.live_interval_spin)
-
-        self.live_engine_combo = QComboBox()
-        self.live_engine_combo.addItem(t("settings.option.live_engine.grounding"), LIVE_ENGINE_GROUNDING)
-        self.live_engine_combo.addItem(t("settings.option.live_engine.ocr"), LIVE_ENGINE_OCR)
-        engine_idx = self.live_engine_combo.findData(
-            settings.value(KEY_LIVE_ENGINE, DEFAULT_LIVE_ENGINE)
-        )
-        if engine_idx >= 0:
-            self.live_engine_combo.setCurrentIndex(engine_idx)
-        self.live_engine_combo.setToolTip(t("settings.tooltip.live_engine"))
-        features_layout.addRow(t("settings.label.live_engine"), self.live_engine_combo)
-
-        self.ocr_detector_combo = QComboBox()
-        self.ocr_detector_combo.addItem(t("settings.option.ocr_detector.mobile"), "PP-OCRv5_mobile_det")
-        self.ocr_detector_combo.addItem(t("settings.option.ocr_detector.server"), "PP-OCRv5_server_det")
-        detector_idx = self.ocr_detector_combo.findData(
-            settings.value(KEY_OCR_DETECTOR, "PP-OCRv5_mobile_det")
-        )
-        if detector_idx >= 0:
-            self.ocr_detector_combo.setCurrentIndex(detector_idx)
-        self.ocr_detector_combo.setToolTip(t("settings.tooltip.ocr_detector"))
-        features_layout.addRow(t("settings.label.ocr_detector"), self.ocr_detector_combo)
-
-        self.ignore_phrases_edit = QPlainTextEdit()
-        self.ignore_phrases_edit.setPlainText(settings.value(KEY_IGNORE_PHRASES, "") or "")
-        self.ignore_phrases_edit.setFixedHeight(70)
-        self.ignore_phrases_edit.setToolTip(t("settings.tooltip.ignore_phrases"))
-        features_layout.addRow(t("settings.label.ignore_phrases"), self.ignore_phrases_edit)
-
-        # Only the OCR engine has a detector or a filter list to configure.
-        def _sync_ocr_rows(_=None):
-            is_ocr = self.live_engine_combo.currentData() == LIVE_ENGINE_OCR
-            self.ocr_detector_combo.setEnabled(is_ocr)
-            self.ignore_phrases_edit.setEnabled(is_ocr)
-
-        self.live_engine_combo.currentIndexChanged.connect(_sync_ocr_rows)
-        _sync_ocr_rows()
-
-        # The interval only means anything while the live overlay is running.
-        self.live_interval_spin.setEnabled(self.experimental_live_cb.isChecked())
-        self.experimental_live_cb.toggled.connect(self.live_interval_spin.setEnabled)
-
-
-        self.memory_enabled_cb = QCheckBox(t("settings.checkbox.memory_enabled"))
-        self.memory_enabled_cb.setToolTip(t("settings.tooltip.memory_enabled"))
-        self.memory_enabled_cb.setChecked(is_true(settings.value(KEY_MEMORY_ENABLED, "true")))
-        features_layout.addRow(self.memory_enabled_cb)
-
-        memory_row = QHBoxLayout()
-        self.memory_retention_spin = QSpinBox()
-        self.memory_retention_spin.setRange(1, 365)
-        self.memory_retention_spin.setSuffix(" d")
-        self.memory_retention_spin.setValue(int(settings.value(
-            KEY_MEMORY_RETENTION_DAYS, constants.DEFAULT_MEMORY_RETENTION_DAYS
-        )))
-        memory_row.addWidget(self.memory_retention_spin, 1)
-        self.clear_memory_btn = QPushButton(t("settings.button.clear_memory"))
-        self.clear_memory_btn.clicked.connect(self._on_clear_memory_clicked)
-        memory_row.addWidget(self.clear_memory_btn)
-        features_layout.addRow(t("settings.label.memory_retention"), memory_row)
-
-        self.familiar_enabled_cb = QCheckBox(t("settings.checkbox.familiar_enabled"))
-        fam_val = settings.value(KEY_FAMILIAR_ENABLED, "false")
-        self.familiar_enabled_cb.setChecked(is_true(fam_val))
-        features_layout.addRow(self.familiar_enabled_cb)
-
-        self.familiar_type_combo = QComboBox()
-        for sp in ("wizard", "witch", "cat", "owl", "lemonfae", "custom"):
-            self.familiar_type_combo.addItem(t(f"familiar.species.{sp}"), sp)
-        fam_type_val = settings.value(KEY_FAMILIAR_TYPE, "wizard")
-        ft_idx = self.familiar_type_combo.findData(fam_type_val)
-        if ft_idx >= 0:
-            self.familiar_type_combo.setCurrentIndex(ft_idx)
-        fam_type_row = QHBoxLayout()
-        fam_type_row.addWidget(self.familiar_type_combo, 1)
-        self.conjure_btn = QPushButton(t("familiar.conjure.button"))
-        self.conjure_btn.clicked.connect(self._on_conjure_clicked)
-        fam_type_row.addWidget(self.conjure_btn)
-        self.fam_type_row = fam_type_row
-        features_layout.addRow(t("settings.label.familiar_type"), fam_type_row)
-
-        self.familiar_tts_cb = QCheckBox(t("settings.checkbox.familiar_tts"))
-        fam_tts_val = settings.value(KEY_FAMILIAR_TTS, "false")
-        self.familiar_tts_cb.setChecked(is_true(fam_tts_val))
-        features_layout.addRow(self.familiar_tts_cb)
-
-        self.live_voice_raid_cb = QCheckBox(t("settings.checkbox.live_voice_raid"))
-        lv_raid_val = settings.value("live_voice_raid", "false")
-        self.live_voice_raid_cb.setChecked(is_true(lv_raid_val))
-        features_layout.addRow(self.live_voice_raid_cb)
-        
-        self.live_raid_lore_save_cb = QCheckBox(t("settings.checkbox.live_raid_lore_save"))
-        lr_lore_val = settings.value("live_raid_lore_save", "false")
-        self.live_raid_lore_save_cb.setChecked(is_true(lr_lore_val))
-        features_layout.addRow(self.live_raid_lore_save_cb)
-
-        self.dev_options_cb = QCheckBox(t("settings.checkbox.dev_options"))
-        dev_options_val = settings.value("developer_options", "false")
-        self.dev_options_cb.setChecked(is_true(dev_options_val))
-        features_layout.addRow(self.dev_options_cb)
-        self.dev_options_cb.toggled.connect(self._update_dev_visibility)
-        self._update_dev_visibility(self.dev_options_cb.isChecked())
-
-        # Overlay Opacity
-        opacity_row = QHBoxLayout()
-        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.opacity_slider.setRange(20, 100)
-        self.opacity_slider.setSingleStep(5)
-        self.opacity_slider.setPageStep(10)
-        opacity_val = int(settings.value("overlay_opacity", 85))
-        self.opacity_slider.setValue(opacity_val)
-        self.opacity_value_label = QLabel(f"{opacity_val}%")
-        self.opacity_value_label.setFixedWidth(36)
-        self.opacity_slider.valueChanged.connect(lambda v: self.opacity_value_label.setText(f"{v}%"))
-        opacity_row.addWidget(self.opacity_slider)
-        opacity_row.addWidget(self.opacity_value_label)
-        features_layout.addRow(t("settings.label.overlay_opacity"), opacity_row)
-
-        # Text Size
-        self.text_size_spin = QSpinBox()
-        self.text_size_spin.setRange(8, 24)
-        self.text_size_spin.setValue(int(settings.value("overlay_text_size", 13)))
-        features_layout.addRow(t("settings.label.text_size"), self.text_size_spin)
-
-        self.tabs.addTab(features_tab, "Features")
-
-        # Buttons
-        btn_row = QHBoxLayout()
-        save_btn = QPushButton(t("settings.button.save"))
-        save_btn.clicked.connect(self._save)
-        cancel_btn = QPushButton(t("settings.button.cancel"))
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addStretch()
-        btn_row.addWidget(save_btn)
-        btn_row.addWidget(cancel_btn)
-        main_layout.addLayout(btn_row)
-
-        self.setStyleSheet("""
-            QDialog { background: #1e1e1e; color: #eee; }
-            QLabel, QCheckBox { color: #ccc; }
-            QLineEdit, QComboBox, QSpinBox {
-                background: #2a2a2a; color: #eee; border: 1px solid #555;
-                border-radius: 4px; padding: 4px;
-            }
-            QPushButton {
-                background: %s; color: white; border: none;
-                padding: 6px 16px; border-radius: 4px; font-weight: bold;
-            }
-            QPushButton:hover { background: %s; }
-            QTabWidget::pane { border: 1px solid #555; background: #1e1e1e; }
-            QTabBar::tab { background: #2a2a2a; color: #ccc; padding: 8px 16px; border: 1px solid #555; }
-            QTabBar::tab:selected { background: %s; color: white; }
-        """ % (accent_hex(), accent_hover_hex(), accent_hex()))
-
-    def _add_preset(self):
-        name, ok = QInputDialog.getText(
-            self,
-            t("settings.prompt.layout_preset.new"),
-            t("settings.prompt.layout_preset.new")
-        )
-        if ok:
-            name = name.strip()
-            if not name:
-                QMessageBox.critical(self, "Error", t("settings.error.layout_preset.invalid"))
-                return
-            presets = [self.preset_combo.itemText(i) for i in range(self.preset_combo.count())]
-            if name in presets:
-                QMessageBox.critical(self, "Error", t("settings.error.layout_preset.exists"))
-                return
-            
-            presets.append(name)
-            self.settings.setValue("layout_presets_list", presets)
-            self.preset_combo.addItem(name)
-            self.preset_combo.setCurrentText(name)
-
-    def _del_preset(self):
-        current = self.preset_combo.currentText()
-        if current == "Default":
-            QMessageBox.critical(self, "Error", "The Default preset cannot be deleted.")
-            return
-            
-        choice = QMessageBox.question(
-            self,
-            "Delete Preset",
-            f"Are you sure you want to delete the layout preset '{current}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        if choice == QMessageBox.StandardButton.Yes:
-            presets = [self.preset_combo.itemText(i) for i in range(self.preset_combo.count())]
-            presets.remove(current)
-            self.settings.setValue("layout_presets_list", presets)
-            
-            self.settings.remove(f"layout/{current}")
-            
-            idx = self.preset_combo.findText(current)
-            if idx >= 0:
-                self.preset_combo.removeItem(idx)
-            self.preset_combo.setCurrentText("Default")
-
-    def _save(self):
-        normalized = normalize_lemonade_api_base_url(self.url_edit.text().strip())
-        if should_warn_http_to_non_loopback(normalized):
-            choice = QMessageBox.warning(
-                self,
-                t("settings.warn.http_remote.title"),
-                t("settings.warn.http_remote.body"),
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if choice == QMessageBox.StandardButton.Cancel:
-                return
-        self.url_edit.setText(normalized)
-        self.settings.setValue(KEY_API_URL, normalized)
-        self.settings.setValue(KEY_API_MODEL, self.model_combo.currentText())
-        # A changed tier names a different collection, so it also decides the
-        # model — otherwise the combo above would keep pointing at the old one.
-        selected_tier = self.tier_combo.currentData()
-        self.tier_changed = selected_tier != self._initial_tier
-        self.settings.setValue(KEY_COLLECTION_TIER, selected_tier)
-        if self.tier_changed:
-            self.settings.setValue(KEY_API_MODEL, get_collection(selected_tier).name)
-        self.settings.setValue("layout_preset", self.preset_combo.currentText())
-        self.settings.setValue(KEY_SOURCE_LANG, self.source_lang_combo.currentText())
-        self.settings.setValue(KEY_TARGET_LANG, self.lang_combo.currentText())
-        self.settings.setValue(KEY_MODE, self.mode_combo.currentText())
-        ui_lang = self.ui_lang_combo.currentText()
-        self.settings.setValue(KEY_UI_LANG, ui_lang)
-        state.load_locale(ui_lang)
-        selected_styles = [s for s, cb in self.style_checkboxes.items() if cb.isChecked()]
-        self.settings.setValue(KEY_STYLES, selected_styles)
-        self.settings.setValue(KEY_MAX_TOKENS, self.tokens_spin.value())
-        self.settings.setValue(KEY_LEADER_KEY, self.leader_combo.currentData())
-        self.settings.setValue(KEY_OVERLAY_TOGGLE_KEY, self.overlay_toggle_combo.currentData())
-        self.settings.setValue(KEY_GPU_UTIL, self.gpu_combo.currentText())
-        self.settings.setValue(KEY_BACKEND_PREFERENCE, self.backend_combo.currentData())
-        self.settings.setValue(KEY_NPU_POWER_MODE, self.npu_power_combo.currentData())
-        self.settings.setValue(KEY_DIALOGUE_DELAY, self.delay_spin.value())
-        self.settings.setValue(KEY_AUTO_CONTINUE, "true" if self.auto_continue_cb.isChecked() else "false")
-        self.settings.setValue(KEY_AUTO_SPEAK, "true" if self.auto_speak_cb.isChecked() else "false")
-        self.settings.setValue(KEY_LIVE_INTERVAL_MS, self.live_interval_spin.value())
-        self.settings.setValue(KEY_EXPERIMENTAL_LIVE, self.experimental_live_cb.isChecked())
-        self.settings.setValue(KEY_MEMORY_ENABLED, "true" if self.memory_enabled_cb.isChecked() else "false")
-        self.settings.setValue(KEY_MEMORY_RETENTION_DAYS, self.memory_retention_spin.value())
-        self.settings.setValue(KEY_FAMILIAR_ENABLED, "true" if self.familiar_enabled_cb.isChecked() else "false")
-        self.settings.setValue(KEY_FAMILIAR_TYPE, self.familiar_type_combo.currentData())
-        self.settings.setValue(KEY_FAMILIAR_TTS, "true" if self.familiar_tts_cb.isChecked() else "false")
-        self.settings.setValue("live_voice_raid", "true" if self.live_voice_raid_cb.isChecked() else "false")
-        self.settings.setValue("live_raid_lore_save", "true" if self.live_raid_lore_save_cb.isChecked() else "false")
-        self.settings.setValue("overlay_opacity", self.opacity_slider.value())
-        self.settings.setValue("overlay_text_size", self.text_size_spin.value())
-        target_val = self.target_window_combo.currentText().strip()
-        if self.target_window_combo.currentIndex() == 0 or target_val == t("settings.option.none_overlay") or target_val == "None (Standard Overlay Mode)":
-            target_val = ""
-        self.settings.setValue(KEY_TARGET_WINDOW_TITLE, target_val)
-        self.settings.setValue("developer_options", "true" if self.dev_options_cb.isChecked() else "false")
-        self.settings.setValue(KEY_LIVE_ENGINE, self.live_engine_combo.currentData())
-        self.settings.setValue(KEY_OCR_DETECTOR, self.ocr_detector_combo.currentData())
-        self.settings.setValue(KEY_IGNORE_PHRASES, self.ignore_phrases_edit.toPlainText())
-        self.settings.setValue(KEY_TRANSLATION_MODEL, self.translation_model_combo.currentData())
-        self.accept()
-
-    def _on_edit_layout(self):
-        self.layout_edit_requested.emit()
-        self.accept()
-
-    def _on_clear_memory_clicked(self):
-        """Settings 'Clear memory' button: erase the whole play history."""
-        confirm = QMessageBox.question(
-            self,
-            t("settings.button.clear_memory"),
-            t("settings.confirm.clear_memory"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-        if self.app is not None:
-            self.app.clear_session_memory()
-
-    def _on_conjure_clicked(self):
-        """Settings 'Conjure…' button: generate via the app, then select custom."""
-        if self.app is not None and self.app.conjure_familiar():
-            idx = self.familiar_type_combo.findData("custom")
-            if idx >= 0:
-                self.familiar_type_combo.setCurrentIndex(idx)
-
-    def _update_dev_visibility(self, checked):
-        self.live_voice_raid_cb.setVisible(checked)
-        self.live_raid_lore_save_cb.setVisible(checked)
-        # Familiar Mode is a developer-only feature while its art is in progress.
-        self.familiar_enabled_cb.setVisible(checked)
-        self.familiar_tts_cb.setVisible(checked)
-        self.features_layout.setRowVisible(self.fam_type_row, checked)
 
 
 class XianApp(QWidget):
@@ -677,7 +101,7 @@ class XianApp(QWidget):
 
         self.processor = VLProcessor(VLConfig(
             model_name=self.settings.value(KEY_API_MODEL, constants.DEFAULT_MODEL),
-            api_url=_normalized_api_url_from_settings(self.settings),
+            api_url=normalized_api_url_from_settings(self.settings),
             max_tokens=int(self.settings.value(KEY_MAX_TOKENS, constants.DEFAULT_MAX_TOKENS)),
             backend_preference=self.settings.value(
                 KEY_BACKEND_PREFERENCE, constants.DEFAULT_BACKEND_PREFERENCE
@@ -966,8 +390,9 @@ class XianApp(QWidget):
             session_recorder=lambda orig, trans: self.processor.record_event("inpaint", orig, trans),
         )
 
-        engine = self.settings.value(KEY_LIVE_ENGINE, DEFAULT_LIVE_ENGINE)
-        if engine == LIVE_ENGINE_OCR:
+        from mage.live_engine import resolve_live_engine
+
+        if resolve_live_engine(self.settings) == LIVE_ENGINE_OCR:
             from mage.live_ocr import LiveOcrWorker
             from xian.filters import TextFilter
 
@@ -1381,7 +806,7 @@ class XianApp(QWidget):
         source_lang = self.settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG)
         target_lang = self.settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG)
         mode = self.settings.value(KEY_MODE, constants.DEFAULT_MODE)
-        styles = _parse_styles(self.settings)
+        styles = parse_styles(self.settings)
 
         worker = InferenceWorker(
             self.processor,
@@ -2115,7 +1540,7 @@ class XianApp(QWidget):
         def on_done(composite_data, anchor_rect):
             source_lang = self.settings.value(KEY_SOURCE_LANG, constants.DEFAULT_SOURCE_LANG)
             target_lang = self.settings.value(KEY_TARGET_LANG, constants.DEFAULT_TARGET_LANG)
-            styles = _parse_styles(self.settings)
+            styles = parse_styles(self.settings)
 
             worker = CinematicWorker(
                 self.processor,
@@ -2283,7 +1708,7 @@ class XianApp(QWidget):
     # Health check
     def _run_health_check(self):
         self._safe_stop_worker("_status_worker")
-        api_url = _normalized_api_url_from_settings(self.settings)
+        api_url = normalized_api_url_from_settings(self.settings)
         self._status_worker = StatusWorker(api_url)
         self._status_worker.status_changed.connect(self._on_health_result)
         self._status_worker.start()
@@ -2337,7 +1762,7 @@ class XianApp(QWidget):
         not already know by name, such as a Xian collection.
         """
         self._safe_stop_worker("_pull_worker")
-        api_url = _normalized_api_url_from_settings(self.settings)
+        api_url = normalized_api_url_from_settings(self.settings)
         gpu_util = self.settings.value(KEY_GPU_UTIL, constants.DEFAULT_GPU_MEMORY_UTILIZATION)
         self._pull_worker = ModelPullWorker(api_url, model_name, gpu_util, body=body)
         self._pull_worker.pull_done.connect(self._on_pull_done)
@@ -2371,7 +1796,7 @@ class XianApp(QWidget):
         
         if dlg.exec():
             # Apply changed settings to processor
-            self.processor.config.api_url = _normalized_api_url_from_settings(self.settings)
+            self.processor.config.api_url = normalized_api_url_from_settings(self.settings)
             self.processor.config.model_name = self.settings.value(KEY_API_MODEL, constants.DEFAULT_MODEL)
             self.processor.config.max_tokens = int(self.settings.value(KEY_MAX_TOKENS, constants.DEFAULT_MAX_TOKENS))
             self.processor.config.backend_preference = self.settings.value(

@@ -259,3 +259,71 @@ def test_hiding_from_capture_survives_a_missing_window_id(monkeypatch):
     monkeypatch.setattr(window_binder.sys, "platform", "win32")
     assert window_binder.hide_window_from_capture(None) is False
     assert window_binder.hide_window_from_capture(0) is False
+
+
+# ── the settings dialog's shape ──────────────────────────────────────
+
+def test_the_settings_are_five_tabs_named_for_tasks(q_app):
+    """"Features" had grown to seventeen unrelated controls, which is a tab
+    you have to read end to end every time you open it."""
+    from mage.ui.settings_dialog import SettingsDialog
+
+    settings = QSettings("XianProject", "MageTestTabs")
+    settings.clear()
+    dialog = SettingsDialog(settings, models=[])
+    try:
+        names = [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
+        assert names == ["Translation", "Overlay", "Server", "Assistant", "Advanced"]
+    finally:
+        dialog.deleteLater()
+        settings.clear()
+
+
+def test_the_settings_that_stopped_controlling_anything_are_gone(q_app):
+    """The leader key and the dialogue delay drove the old letter-menu
+    interface; the experimental-live checkbox gated a live overlay the
+    translation boxes never consulted."""
+    from mage.ui.settings_dialog import SettingsDialog
+
+    settings = QSettings("XianProject", "MageTestDead")
+    settings.clear()
+    dialog = SettingsDialog(settings, models=[])
+    try:
+        for widget in ("leader_combo", "experimental_live_cb", "delay_spin"):
+            assert not hasattr(dialog, widget), f"{widget} controls nothing any more"
+    finally:
+        dialog.deleteLater()
+        settings.clear()
+
+
+def test_saving_still_writes_every_setting_it_shows(q_app):
+    """The tabs moved; what a save persists must not have."""
+    from mage.settings_keys import (
+        KEY_IGNORE_PHRASES,
+        KEY_LIVE_ENGINE,
+        KEY_LIVE_INTERVAL_MS,
+        KEY_OVERLAY_TOGGLE_KEY,
+        KEY_SOURCE_LANG,
+        KEY_TARGET_LANG,
+    )
+    from mage.ui.settings_dialog import SettingsDialog
+
+    settings = QSettings("XianProject", "MageTestSave")
+    settings.clear()
+    dialog = SettingsDialog(settings, models=[])
+    try:
+        dialog.live_interval_spin.setValue(1200)
+        dialog.ignore_phrases_edit.setPlainText("HP\nMP")
+        dialog.opacity_slider.setValue(60)
+        dialog.text_size_spin.setValue(19)
+        dialog._save()
+
+        assert int(settings.value(KEY_LIVE_INTERVAL_MS)) == 1200
+        assert settings.value(KEY_IGNORE_PHRASES) == "HP\nMP"
+        assert int(settings.value("overlay_opacity")) == 60
+        assert int(settings.value("overlay_text_size")) == 19
+        for key in (KEY_SOURCE_LANG, KEY_TARGET_LANG, KEY_LIVE_ENGINE, KEY_OVERLAY_TOGGLE_KEY):
+            assert settings.value(key) is not None, f"{key} was not saved"
+    finally:
+        dialog.deleteLater()
+        settings.clear()

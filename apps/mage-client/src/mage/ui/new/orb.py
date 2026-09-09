@@ -199,6 +199,9 @@ class OrbPanel(MageOverlayWindow):
     translate_once_requested = pyqtSignal()
     settings_requested = pyqtSignal()
     notes_requested = pyqtSignal()
+    box_mode_cycled = pyqtSignal(str)
+    box_removed = pyqtSignal(str)
+    boxes_cleared = pyqtSignal()
 
     #: Entries kept in the view. The session store keeps the real history;
     #: this is a window onto the recent end of it.
@@ -232,6 +235,24 @@ class OrbPanel(MageOverlayWindow):
             header.addWidget(button)
         layout.addLayout(header)
 
+        # Every box on screen, reachable without touching it.  A box is a
+        # frame around a piece of the game and mostly a hole, so its own
+        # controls only appear when the pointer finds that frame — which is
+        # not a thing to depend on when the alternative is a box that cannot
+        # be changed or deleted at all.
+        self._boxes_row = QHBoxLayout()
+        self._boxes_row.setSpacing(4)
+        self._boxes_label = QLabel(t("newui.orb.label.boxes"))
+        self._boxes_label.setStyleSheet("color: #8a8a9e; font-size: 11px;")
+        self._boxes_row.addWidget(self._boxes_label)
+        self._boxes_row.addStretch(1)
+        self._clear_boxes_button = QPushButton(t("newui.orb.button.clear_boxes"))
+        self._clear_boxes_button.setToolTip(t("newui.orb.tooltip.clear_boxes"))
+        self._clear_boxes_button.clicked.connect(self.boxes_cleared)
+        self._boxes_row.addWidget(self._clear_boxes_button)
+        self._box_widgets: list[QWidget] = []
+        layout.addLayout(self._boxes_row)
+
         self._log = QTextBrowser()
         self._log.setOpenExternalLinks(False)
         layout.addWidget(self._log, 1)
@@ -261,6 +282,40 @@ class OrbPanel(MageOverlayWindow):
             "QPushButton:hover { background: rgba(60,60,86,240); }"
             "QPushButton:checked { background: rgba(60,140,90,240); }"
         )
+
+    # ── the boxes ────────────────────────────────────────────────────
+
+    def set_boxes(self, entries: list[tuple[str, str, str]]) -> None:
+        """Rebuild the row from ``(box_id, label, mode)`` triples.
+
+        Rebuilt wholesale rather than diffed: there are at most five of them,
+        and a row that is regenerated cannot drift out of step with the boxes
+        it describes.
+        """
+        for widget in self._box_widgets:
+            self._boxes_row.removeWidget(widget)
+            widget.deleteLater()
+        self._box_widgets = []
+
+        self._boxes_label.setText(
+            t("newui.orb.label.boxes") if entries else t("newui.orb.label.no_boxes")
+        )
+        self._clear_boxes_button.setEnabled(bool(entries))
+
+        # Inserted before the stretch and the clear button, so they stay right.
+        position = 1
+        for box_id, label, mode in entries:
+            chip = QPushButton(f"{label} · {mode}")
+            chip.setToolTip(t("newui.orb.tooltip.cycle_mode"))
+            chip.clicked.connect(lambda _checked=False, i=box_id: self.box_mode_cycled.emit(i))
+            remove = QPushButton("✕")
+            remove.setFixedWidth(22)
+            remove.setToolTip(t("newui.orb.tooltip.remove_box"))
+            remove.clicked.connect(lambda _checked=False, i=box_id: self.box_removed.emit(i))
+            for widget in (chip, remove):
+                self._boxes_row.insertWidget(position, widget)
+                self._box_widgets.append(widget)
+                position += 1
 
     # ── the log ──────────────────────────────────────────────────────
 
